@@ -24,3 +24,4 @@ evaluation:
   horizons: [200, 800]
   max_sources_per_root: 6
   bootstrap_samples: 2000
+  interleaved: {adam_steps: 400, cycles: 6, horizon: 400, reference_multiple: 3, start_steps: [400, 1600]}

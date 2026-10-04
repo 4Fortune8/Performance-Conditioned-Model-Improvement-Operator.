@@ -169,6 +169,21 @@ class SafetyConfig:
 
 
 @dataclass
+class InterleavedConfig:
+    """E4: optimizer for ``adam_steps`` -> one improver jump of ``horizon`` -> repeat ``cycles`` times."""
+
+    adam_steps: int = 400  # must be >= the largest history lag
+    cycles: int = 6
+    horizon: int = 400
+    gate: bool = True
+    reference_multiple: int = 3  # plain-AdamW reference runs this many times longer (for speedup > 1)
+    start_steps: list[int] = field(default_factory=lambda: [400])  # trunk anchor steps to start from
+    methods: list[str] = field(
+        default_factory=lambda: ["no_update", "linear_extrapolation", "adam_extrapolation", "operator", "operator_scaled"]
+    )
+
+
+@dataclass
 class EvaluationConfig:
     root_split: str = "val"  # which root partition to evaluate on (val during development, test once at the end)
     report_split: str = "dev"  # task-data split for reported numbers (test only for the final run)
@@ -200,6 +215,7 @@ class EvaluationConfig:
     max_sources_per_root: int | None = None
     bootstrap_samples: int = 2000
     seed: int = 0
+    interleaved: InterleavedConfig = field(default_factory=InterleavedConfig)
 
 
 @dataclass

@@ -13,7 +13,7 @@ from mio.models.base import IncompatibleModelError
 from mio.operators.features import FeatureSpec
 from mio.operators.residual import ConditionPolicy, CoordinatewiseNet, LearnedOperator
 from mio.operators.training import train_operator
-from mio.state import Condition, ModelState, OptState, Proposal
+from mio.state import Condition, OptState, Proposal
 
 
 @pytest.fixture(scope="module")

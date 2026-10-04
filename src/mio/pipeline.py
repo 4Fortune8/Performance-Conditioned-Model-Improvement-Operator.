@@ -11,6 +11,7 @@ from mio.models.registry import build_model
 from mio.datasets.transitions import build_transitions, load_transitions, summarize_transitions, write_transitions
 from mio.evaluation.analysis import class_specificity, controllability, markdown_report, summarize
 from mio.evaluation.evaluator import run_evaluation
+from mio.evaluation.interleaved import run_interleaved
 from mio.operators.training import train_operator
 from mio.trajectories.checkpoints import CheckpointStore
 from mio.trajectories.generator import generate_population
@@ -57,6 +58,10 @@ def stage_evaluate(cfg: ExperimentConfig, root_split: str | None = None, report_
     out = run_evaluation(cfg, root_split, report_split, allow_test, methods)
     stage_report(cfg, out)
     return out
+
+
+def stage_interleaved(cfg: ExperimentConfig, root_split: str | None = None, methods: list[str] | None = None) -> Path:
+    return run_interleaved(cfg, root_split, methods)
 
 
 def stage_report(cfg: ExperimentConfig, eval_dir: Path, reference: str = "no_update") -> str:

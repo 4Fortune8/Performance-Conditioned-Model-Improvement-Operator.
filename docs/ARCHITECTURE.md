@@ -141,6 +141,18 @@ includes 0, so a tuned method can decline to move.
 Development runs use **validation roots × dev split**. The final report uses
 **test roots × official test split**, behind `--final` / `allow_test=True`.
 
+**Interleaved protocol (E4)** — `evaluation/interleaved.py`. From a stored anchor, repeat
+`cycles` times: `adam_steps` AdamW steps (recording the lag snapshots the operator needs),
+then one gated jump of `horizon` step-equivalents. A plain-AdamW reference with the same
+data order runs `reference_multiple` times longer. The report gives the gain over the
+reference at equal AdamW steps and the speedup (reference steps needed to match the final
+loss ÷ AdamW steps used). `no_update` reproduces the reference exactly, which is a
+calibration test.
+
+**Recursion (E5)** — `evaluation/recursive.py`. Repeated application with stopping rules:
+max iterations, cumulative update limit, minimum gain, consecutive rejections and invalid
+outputs. Every proposal is logged, and rejection rolls back.
+
 ## Leakage rules (enforced)
 
 - Partitions are assigned per init group. Every checkpoint, branch and order variant of a

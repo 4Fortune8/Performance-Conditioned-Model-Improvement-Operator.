@@ -25,7 +25,7 @@ CPU is sufficient. Python ≥ 3.10.
 
 ```bash
 pip install -e ".[dev]"          # torch, numpy, safetensors, pyyaml, pytest
-python -m pytest                 # ~10 s, synthetic task, no downloads
+python -m pytest                 # ~15 s, synthetic task, no downloads
 ```
 
 Fashion-MNIST / MNIST are downloaded on first use into `data/raw/` and checksum-verified.
@@ -51,6 +51,7 @@ python scripts/generate_population.py --config configs/fmnist_pilot.yaml --worke
 python scripts/build_dataset.py      --config configs/fmnist_pilot.yaml               # data/transitions/<population>/
 python scripts/train_operator.py     --config configs/fmnist_pilot.yaml               # results/<experiment>/operator/
 python scripts/evaluate_operator.py  --config configs/fmnist_pilot.yaml               # results/<experiment>/eval_val_dev/
+python scripts/run_interleaved.py    --config configs/fmnist_pilot.yaml               # results/<experiment>/interleaved_val_dev/
 ```
 
 `evaluate_operator.py --final` evaluates **test roots on the official test split**. It is

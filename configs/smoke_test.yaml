@@ -63,3 +63,4 @@ evaluation:
   reference_multiple: 4
   reference_eval_every: 10
   bootstrap_samples: 1000
+  interleaved: {adam_steps: 200, cycles: 3, horizon: 200, reference_multiple: 2, start_steps: [200]}

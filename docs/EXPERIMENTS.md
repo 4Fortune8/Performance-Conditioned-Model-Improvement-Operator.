@@ -97,6 +97,7 @@ python scripts/generate_population.py --config configs/fmnist_pilot.yaml --worke
 python scripts/build_dataset.py      --config configs/fmnist_pilot.yaml
 python scripts/train_operator.py     --config configs/fmnist_pilot.yaml
 python scripts/evaluate_operator.py  --config configs/fmnist_pilot.yaml           # val roots, dev split
+python scripts/run_interleaved.py    --config configs/fmnist_pilot.yaml           # E4, val roots, dev split
 # Final, once, after the analysis plan is committed:
 python scripts/evaluate_operator.py  --config configs/<final>.yaml --final       # test roots, test split
 ```

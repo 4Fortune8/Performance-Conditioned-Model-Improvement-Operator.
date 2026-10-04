@@ -47,3 +47,19 @@ def test_class_specificity_diagonal():
     s = class_specificity(rows, 3, n_boot=100)
     assert s["diag_mean"] == pytest.approx(0.5) and s["offdiag_mean"] == pytest.approx(-0.1)
     assert s["specificity_mean"] == pytest.approx(0.6)
+
+
+def test_interleaved_protocol_calibration(population, synthetic_cfg, tmp_path):
+    """no_update must reproduce the plain-AdamW reference exactly (gain 0, speedup 1)."""
+    from mio.evaluation.interleaved import run_interleaved
+    from mio.pipeline import stage_train_operator
+    from mio.utils.serialization import read_jsonl
+
+    stage_train_operator(synthetic_cfg)
+    out = run_interleaved(synthetic_cfg, "val", ["no_update", "adam_extrapolation", "operator"], out_dir=tmp_path)
+    rows = list(read_jsonl(out / "results.jsonl"))
+    base = [r for r in rows if r["method"] == "no_update"]
+    assert base and all(r["gain_vs_reference"] == 0.0 for r in base)
+    assert all(r["speedup"] == pytest.approx(1.0) for r in base)
+    assert {r["method"] for r in rows} == {"no_update", "adam_extrapolation", "operator"}
+    assert (out / "summary.md").exists()

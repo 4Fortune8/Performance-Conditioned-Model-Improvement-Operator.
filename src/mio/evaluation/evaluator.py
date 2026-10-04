@@ -118,30 +118,17 @@ def stage_of(step: int, total_steps: int) -> str:
     return "early" if frac < 0.1 else ("mid" if frac < 0.5 else "late")
 
 
-def run_evaluation(cfg: ExperimentConfig, root_split: str | None = None, report_split: str | None = None,
-                   allow_test: bool = False, methods: list[str] | None = None,
-                   operator_path: Path | None = None, out_dir: Path | None = None) -> Path:
-    ec = cfg.evaluation
-    root_split = root_split or ec.root_split
-    report_split = report_split or ec.report_split
-    if (root_split == "test" or report_split == "test") and not allow_test:
-        raise RuntimeError("evaluating on test roots / the test split requires allow_test=True (final run only)")
-    methods = list(methods or ec.methods)
-    configure_determinism(cfg.num_threads)
-    t_start = time.perf_counter()
+def build_methods(cfg: ExperimentConfig, store: CheckpointStore, task: TaskData, model, engine: ChildEngine,
+                  methods: list[str], train_tr: list[dict], operator_path: Path | None = None
+                  ) -> tuple[list, LearnedOperator | None, ConditionPolicy, dict, int]:
+    """Instantiate improvers by name; tune step sizes on validation roots using the accept split only.
 
-    store = CheckpointStore(cfg.population_dir)
-    task = load_task(cfg.task, cfg.data_dir)
-    model = build_model(cfg.model, task.input_dim, task.num_classes)
-    store.spec.check_compatible(model.spec)
-    train_split = task.split("train")
+    Returns ``(improvers, operator, policy, alphas, matched_steps)``.
+    """
+    ec = cfg.evaluation
     oc = cfg.population.optimizer
     lags = store.meta["history_lags"]
-    all_tr = load_transitions(cfg.transitions_path)
-    train_tr = [t for t in all_tr if t["partition"] == "train"]
-
-    engine = ChildEngine(model, task, cfg.safety, report_split, allow_test, ec.accept_min_gain)
-
+    train_split = task.split("train")
     # ---- learned operator --------------------------------------------------
     operator = None
     if any(m.startswith("operator") for m in methods):
@@ -202,6 +189,37 @@ def run_evaluation(cfg: ExperimentConfig, root_split: str | None = None, report_
             raise KeyError(f"unknown method {m!r}")
     # adamw_full first so other methods can be compared with the real optimizer's delta.
     improvers.sort(key=lambda imp: imp.name != "adamw_full")
+
+    return improvers, operator, policy, alphas, matched_steps
+
+
+def run_evaluation(cfg: ExperimentConfig, root_split: str | None = None, report_split: str | None = None,
+                   allow_test: bool = False, methods: list[str] | None = None,
+                   operator_path: Path | None = None, out_dir: Path | None = None) -> Path:
+    ec = cfg.evaluation
+    root_split = root_split or ec.root_split
+    report_split = report_split or ec.report_split
+    if (root_split == "test" or report_split == "test") and not allow_test:
+        raise RuntimeError("evaluating on test roots / the test split requires allow_test=True (final run only)")
+    methods = list(methods or ec.methods)
+    configure_determinism(cfg.num_threads)
+    t_start = time.perf_counter()
+
+    store = CheckpointStore(cfg.population_dir)
+    task = load_task(cfg.task, cfg.data_dir)
+    model = build_model(cfg.model, task.input_dim, task.num_classes)
+    store.spec.check_compatible(model.spec)
+    train_split = task.split("train")
+    oc = cfg.population.optimizer
+    all_tr = load_transitions(cfg.transitions_path)
+    train_tr = [t for t in all_tr if t["partition"] == "train"]
+
+    engine = ChildEngine(model, task, cfg.safety, report_split, allow_test, ec.accept_min_gain)
+
+    improvers, operator, policy, alphas, matched_steps = build_methods(
+        cfg, store, task, model, engine, methods, train_tr, operator_path)
+    if operator is not None:
+        operator_path = operator_path or cfg.results_dir / "operator" / "operator.pt"
 
     sources = []
     for rid in store.roots(root_split):

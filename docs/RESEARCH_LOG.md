@@ -497,3 +497,75 @@ steps 400 and 1,600. Gains are vs same-data AdamW at equal AdamW steps.
    update changes.
 5. **Give the operator EMA features** (`(EMA − θ)` per decay), so it can at least represent
    the selector's best candidate. The coordinatewise operator currently cannot see the EMA.
+
+## 2026-10-04 — Gate 1: steering vs class-weighted fine-tuning → **NO-GO**
+
+Design pre-registered in EXPERIMENTS §6 (commit `d2485ab`) before any number was computed.
+Validation roots × dev split; test roots untouched. Run:
+`python scripts/gate1_steering.py --config configs/fmnist_pilot_conditioned.yaml` (565 s).
+
+**Question.** Session 2's one positive result was steering: a class-k request to the conditioned
+operator improves class k more than the others. Is that steering better than just training on
+class k for the same compute?
+
+**Arms.** All 48 validation sources (8 groups) × 10 requested classes:
+
+- The frozen conditioned operator (13 fb-pass equivalents).
+- `class_ft_w{W}_x{M}`: AdamW continued from the parent's exact state, with the requested class's
+  loss weighted W ∈ {4, 16}, for M × 13 steps, M ∈ {1, 2, 4, 16}.
+
+The operator rows reproduced session 2 exactly: 960 rows, max difference 0.
+
+| method | steps | specificity [95% CI] | class-acc spec. | requested-class gain | overall NLL gain |
+|---|---|---|---|---|---|
+| conditioned operator | 13 fb-eq | **+0.0120** [+0.0074, +0.0168] | +0.41 pp | +0.0152 | +0.0041 |
+| class_ft W=4 | 13 | +0.178 [+0.172, +0.184] | +6.7 pp | +0.149 | −0.011 |
+| class_ft W=16 | 13 | **+0.381** [+0.372, +0.390] | +13.7 pp | +0.264 | −0.080 |
+| class_ft W=4 | 26 / 52 / 208 | +0.213 / +0.225 / +0.229 | +8.1 / 8.6 / 8.6 pp | +0.180 / +0.190 / +0.204 | −0.012 / −0.012 / −0.002 |
+| class_ft W=16 | 26 / 52 / 208 | +0.439 / +0.417 / +0.411 | +16.0 / 15.3 / 14.8 pp | +0.297 / +0.296 / +0.303 | −0.099 / −0.080 / −0.068 |
+
+**Primary endpoint.** The bar at the matched budget (13 steps) is W = 16, the weight selected on
+the accept split. Δspec = operator − bar = **−0.369 [−0.379, −0.360]**, and the bar wins in
+0/8 groups. The pre-registered rule therefore gives **NO-GO**. Even the weakest arm (W = 4,
+13 steps) has 15× the operator's specificity. Equivalent fine-tuning steps for the operator's
+specificity: fewer than 13, below the bottom of the ladder.
+
+**The operator's one advantage is small.** Its overall NLL gain under class requests is
++0.004, while class fine-tuning costs overall loss (W = 16: −0.08). But W = 4 at 208 steps
+reaches 19× the specificity at an overall cost of only −0.002. Scaling the fine-tuning delta
+down could trade specificity for side effects further, so the operator holds no part of the
+specificity/side-effect frontier that matters.
+
+**Why.** The operator is asked for the gains its training transitions achieved (≈ +0.17 nats
+on the requested class at quantile 0.75) and delivers ≈ +0.015, about 10% of the request. The
+session-2 request sweep was similarly compressed. The coordinatewise operator reads the
+request, but the update it can express from per-coordinate features is far too weak. Direct
+gradient access to the requested class is a much stronger signal at this budget.
+
+### What this means for the roadmap (decision recorded before any further work)
+
+- On this population, the learned operator now loses to a simple baseline on every axis tested:
+  - one-shot improvement: averaging and the selector
+  - interleaved boosting: the selector
+  - steering: class-weighted fine-tuning, by more than an order of magnitude
+- Per the pre-registered rule, operator development at this scale stops here. The H3 primary
+  endpoint (EXPERIMENTS §4) is not pursued, and the test roots stay locked. They would only
+  confirm known negatives.
+- **Next: the write-up branch.**
+  - A benchmark and negative-result report: learned weight-space improvers vs. strong simple
+    baselines.
+  - Covers exact replay, root-level leakage-proof splits, gating applied equally to all methods,
+    paired group bootstrap, and the memorization-gap check.
+  - Shows that checkpoint averaging/selection explains the apparent one-shot gains, and that
+    weak-but-real conditioning is not useful steering.
+- A substantially different operator design could reopen the question, as a new project with a
+  new pre-registration rather than a continuation. Examples: a neuron-interaction (permutation-
+  equivariant, non-coordinatewise) architecture, or an operator that consumes a few gradient
+  evaluations. Any such design must clear this same Gate 1 bar first.
+
+### Limitations
+- 8 validation groups, one population, one task, one operator. The effect size (−0.37 with
+  CIs of ±0.01) leaves no doubt about the direction at this scale.
+- The baseline uses training-split gradients for the requested class, while the operator sees
+  only weights, trajectory and accept-split metrics. That is the intended comparison: what
+  a practitioner would do instead.

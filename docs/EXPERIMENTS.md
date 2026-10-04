@@ -132,6 +132,9 @@ python scripts/evaluate_operator.py  --config configs/<final>.yaml --final      
 
 > Status: **frozen** at the commit that adds this section, before any Gate 1 number was computed.
 > Validation roots × dev split only; test roots stay locked.
+>
+> **Outcome: NO-GO** (RESEARCH_LOG, Gate 1 entry). Δspec = −0.369 [−0.379, −0.360] vs W = 16 at
+> 13 steps; 0/8 groups.
 
 **Question.** The conditioned operator steers: a class-k request improves class k more than
 the other classes (session 2: specificity +0.0120 on validation roots). Is that useful? The fair

@@ -79,6 +79,13 @@ All gains are signed so that positive = better (`metrics.gains`).
 
 > Status: **draft, updated with pilot numbers** (RESEARCH_LOG 2026-10-04). To be frozen, with the
 > final operator configuration, before any `--final` run.
+>
+> Session 2 (RESEARCH_LOG, second 2026-10-04 entry): on validation roots every operator loses
+> to `select_simple` by 0.007–0.012 nats, so endpoint 2 as written would test a known negative.
+> The conditioned operator shows class specificity and request ordering (H3) on validation
+> roots. Open decision before freezing: whether H3 (class specificity and sweep Spearman of a
+> frozen conditioned operator) becomes the primary endpoint, with the selector comparison
+> kept as a reported secondary.
 
 1. Population: `n_groups ≈ 120` (60 / 30 / 30). Pilot group-level SDs of paired
    differences were 0.002–0.005 nats, so ≈ 20–25 held-out groups detect a 0.003-nat

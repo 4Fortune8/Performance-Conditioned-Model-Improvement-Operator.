@@ -270,3 +270,230 @@ simple directions:
    scale to ≈120 init groups (60 / 30 / 30, about 20 min generation on 4 cores). Then run
    the single `--final` evaluation on test roots.
 6. **Generalization ladder:** L1 (order variants), L3 (hyperparameter population), L5 (MNIST).
+
+---
+
+## 2026-10-04 — Session 2: honest bar, residual and conditioned operators, memorization gap
+
+Next steps 1–4 of session 1. Everything runs on **validation roots × dev split**. Selection
+and tuning use the validation roots' accept split. Test roots and the test split were not
+touched.
+
+### Implemented
+- **EMA tracking** during generation (`ema_decays: [0.99, 0.999]`, bias-corrected, stored with
+  every anchor) and an `ema_<decay>` baseline. A test checks that stored EMAs equal a replay
+  from initialization, and that a tracker resumed at one anchor reproduces the next.
+- **Gated best-simple-baseline selector** `select_simple`. Per parent it proposes the
+  accept-split-best of no_update, history_average, ema_0.99, ema_0.999 and weight_scaling
+  (tuned α = −0.05). It costs 5 accept-split forward passes ≈ 65 fb-eq.
+  `select_with_operator` adds the operator to the candidates (≈ 91 fb-eq). Reports now
+  include gated paired differences vs the selector and its choice counts.
+- **Residual operator** (`operator.base: history_average`,
+  `configs/fmnist_pilot_residual.yaml`). Proposes the averaging delta plus a learned
+  correction; zero-init equals history_average.
+- **Condition-aware behavioural objective** (`behavioral_objective: conditioned`,
+  `configs/fmnist_pilot_conditioned.yaml`). Hindsight matching in function space, on the
+  overall loss or on one class (details in ARCHITECTURE §3).
+- **Memorization gap.** `evaluate_operator.py --root-split train --no-reference` and
+  `analysis.generalization_gap` (unpaired two-sample bootstrap over groups).
+  `scripts/compare_operators.py` merges per-operator runs and checks that their shared
+  baseline rows are identical. They were, across all three runs.
+- 9 new tests (50 total).
+
+### Reproducibility check
+- **Population.** Rebuilt from `configs/fmnist_pilot.yaml` (365 s on 4 processes; 885 MB
+  including EMAs). It is bit-identical to the session-1 population: 3,480 tensors, all
+  metrics and partitions. The transition index is identical too.
+- **Stage B operator.** Retraining with the refactored code again selected step 750 and
+  reproduced the session-1 evaluation exactly: +0.0099 [+0.0077, +0.0131] at h = 200.
+
+### Operators (one factor changed vs Stage B each)
+
+| Operator | Config | Selected step (accept gain, val) | Train time (1 core) |
+|---|---|---|---|
+| Stage B | `fmnist_pilot_stage_b.yaml` | 750 (+0.0088) | 26.5 min |
+| Residual on history_average | `fmnist_pilot_residual.yaml` | 2,750 (+0.0101) | 26.6 min |
+| Conditioned behavioural | `fmnist_pilot_conditioned.yaml` | 1,750 (+0.0091) | 22.8 min |
+
+The validation accept-gain curves swing by ±0.01 between checkpoints, for example the
+conditioned operator: +0.0091 at step 1,750, −0.0120 at 2,000, +0.0082 at 2,500. Selection
+from these curves is noisy, and part of each selected score is winner's curse. The reported
+numbers use the separate dev split.
+
+### Results: one-shot application (8 validation groups, 48 parents)
+
+Group-level means with 95% bootstrap CIs. Gains are dev-split NLL in nats.
+"Gated − selector" is the per-group paired difference of gated gains vs `select_simple`, the
+primary comparator of EXPERIMENTS §4.
+
+**h = 200**
+
+| Method | Cost (fb eq) | Ungated gain | Gated gain | Gated − selector [95% CI] | Groups > selector |
+|---|---|---|---|---|---|
+| residual + selector (`select_with_operator`) | 91 | +0.0220 | +0.0220 | **+0.0011 [+0.0004, +0.0020]** | 7/8 |
+| Stage B + selector | 91 | +0.0219 | +0.0219 | +0.0009 [+0.0003, +0.0016] | 7/8 |
+| conditioned + selector | 91 | +0.0215 | +0.0215 | +0.0005 [−0.0001, +0.0012] | 5/8 |
+| **select_simple** | 65 | +0.0209 | **+0.0209** | 0 | — |
+| adamw_full (200 steps) | 200 | +0.0162 | +0.0193 | −0.0016 [−0.0051, +0.0022] | 3/8 |
+| ema_0.99 | 0 | +0.0139 | +0.0189 | −0.0020 [−0.0023, −0.0017] | 0/8 |
+| ema_0.999 | 0 | −0.0040 | +0.0138 | −0.0071 | 0/8 |
+| residual operator | 13 | +0.0128 | +0.0135 | −0.0074 [−0.0090, −0.0059] | 0/8 |
+| history_average | 0 | −0.0184 | +0.0133 | −0.0076 | 0/8 |
+| Stage B operator | 13 | +0.0099 | +0.0101 | −0.0108 [−0.0123, −0.0093] | 0/8 |
+| conditioned operator | 13 | +0.0090 | +0.0092 | −0.0118 [−0.0138, −0.0096] | 0/8 |
+| weight_scaling | 0 | +0.0040 | +0.0068 | −0.0141 | 0/8 |
+| adamw_matched (13 steps) | 13 | +0.0016 | +0.0064 | −0.0145 | 0/8 |
+
+At h = 800 the ordering is the same, with one exception: `adamw_full` (800 steps) is the only
+method above the selector, at +0.0384 gated. The averaging baselines and the selector ignore
+the horizon.
+
+**Where each method helps** (gated gain, h = 200)
+
+| Stage | adamw_full | select_simple | ema_0.99 | residual op. | Stage B op. |
+|---|---|---|---|---|---|
+| early (< 10%) | +0.0442 | +0.0068 | +0.0068 | +0.0085 | +0.0083 |
+| mid | +0.0105 | +0.0233 | +0.0233 | +0.0149 | +0.0111 |
+| late | +0.0031 | +0.0327 | +0.0267 | +0.0170 | +0.0110 |
+
+What the selector picked at h = 200 (counts of parents):
+
+| Stage | select_simple | select_with_operator (residual) |
+|---|---|---|
+| early | no_update ×9, ema_0.99 ×7 | operator ×12 |
+| mid | ema_0.99 ×16 | ema_0.99 ×16 |
+| late | ema_0.999 ×15, weight_scaling ×1 | ema_0.999 ×15, weight_scaling ×1 |
+
+The operator is only ever chosen early in training. All of `select_with_operator`'s margin
+over the selector comes from those parents.
+
+**Residual vs its base.** Ungated, the residual operator is +0.031 nats over history_average,
+mostly by not averaging early in training. Gated, the two are indistinguishable:
++0.0002 [−0.0012, +0.0019]. By stage:
+- early: +0.005
+- mid: −0.002
+- late: −0.003
+
+It is below `ema_0.99`: gated −0.0054 [−0.0069, −0.0041]. Against Stage B, the residual base
+is a real improvement: gated +0.0034 [+0.0031, +0.0036] at h = 200, 8/8 groups.
+
+**Conditioning (H3)**
+
+| Operator | Request-sweep Spearman | Class specificity (NLL) | Requested-class / other-class gain | Class-accuracy specificity |
+|---|---|---|---|---|
+| Stage B | −0.36 [−0.52, −0.17] | −0.0004 [−0.0010, +0.0001] | +0.0085 / +0.0089 | −0.02 pp (2/8 groups > 0) |
+| Residual | −0.04 [−0.29, +0.23] | +0.0006 [+0.0001, +0.0010] | +0.0129 / +0.0123 | — |
+| **Conditioned** | **+0.51 [+0.38, +0.62]** | **+0.0120 [+0.0074, +0.0168]** | +0.0152 / +0.0032 | **+0.41 pp (8/8)** |
+
+The conditioned operator responds to requests, but the sweep is compressed. At h = 200:
+- Asking for −0.018, +0.013 and +0.032 nats yields +0.0074, +0.0087 and +0.0093.
+- Correctly ordered, not calibrated, and it does not deliver harm when asked for it.
+
+Class requests steer the requested class five times more than the others, at a cost:
+overall NLL gain under class requests is +0.0041, against +0.0085 for Stage B. Its
+default-request gain is slightly below Stage B: −0.0010 [−0.0020, −0.0001] gated at h = 200,
++0.0011 [−0.0004, +0.0026] at h = 800.
+
+### Memorization gap (H2): train roots vs held-out roots
+
+Evaluated on the 24 training groups (144 parents), on which every operator was trained, vs
+the 8 validation groups. This is unpaired.
+
+| Method | h | Train-root gain | Held-out gain | Gap [95% CI] |
+|---|---|---|---|---|
+| Stage B operator | 200 | +0.0094 | +0.0099 | −0.0004 [−0.0040, +0.0025] |
+| residual operator | 200 | +0.0127 | +0.0128 | −0.0002 [−0.0042, +0.0031] |
+| conditioned operator | 200 | +0.0083 | +0.0090 | −0.0007 [−0.0036, +0.0018] |
+| select_simple (never trained) | 200 | +0.0192 | +0.0209 | −0.0018 [−0.0062, +0.0019] |
+| ema_0.99 (never trained) | 200 | +0.0123 | +0.0139 | −0.0015 [−0.0054, +0.0018] |
+
+- None of the operators shows a detectable memorization gap. All gaps are within the
+  root-sampling differences seen for untrained baselines, at a resolution of about ±0.004
+  nats.
+- With a 7k-parameter coordinatewise network applied to 52k-coordinate states, this is
+  expected. The gains are not fitted to particular initializations.
+- The conditioned operator's class specificity is the same on training roots (+0.0117
+  [+0.0098, +0.0136], 24 groups) as on held-out roots (+0.0120 [+0.0074, +0.0168]).
+
+### Interleaved application (E4)
+
+Protocol as in session 1: 6 × (400 AdamW steps + one gated jump of h = 400), starting at
+steps 400 and 1,600. Gains are vs same-data AdamW at equal AdamW steps.
+
+| Method | Gain vs AdamW [95% CI] | Groups > 0 | Speedup (median) | Jumps taken |
+|---|---|---|---|---|
+| select_with_operator (residual) | +0.0146 [+0.0123, +0.0176] | 8/8 | ∞ (beyond the 3× reference) | 6.0 |
+| **select_simple** | **+0.0145 [+0.0121, +0.0176]** | 8/8 | ∞ | 6.0 |
+| residual operator | +0.0093 [+0.0068, +0.0117] | 8/8 | 2.08 | 5.8 |
+| conditioned operator | +0.0072 [+0.0054, +0.0093] | 8/8 | 1.52 | 5.6 |
+| Stage B operator | +0.0028 [+0.0011, +0.0049] | 7/8 | 0.98 | 4.7 |
+| ema_0.999 | −0.0088 [−0.0139, −0.0036] | 2/8 | 0.62 | 4.5 |
+
+- **Selector:** "∞" means the run ends below the best dev loss that 3× as many plain AdamW
+  steps ever reach. That happens for 56% of sources. In this regime (constant lr; the MLP
+  overfits the dev split after ~4,800 steps), averaging reaches dev losses that more AdamW
+  steps never reach.
+- **Residual operator:** its interleaved gain is 3× Stage B's.
+- **select_with_operator:** adding any operator to the selector changes the interleaved
+  result by ≤ 0.0003.
+
+### Interpretation against the hypotheses
+- **H1 (learnability) — not supported against the honest bar.**
+  - Every learned operator gives consistent gains over no_update (8/8 groups).
+  - None beats per-parent selection among free averaging updates. The gaps are 0.007–0.012
+    nats at h = 200, with all 8 groups favouring the selector.
+  - The residual result shows that the best operator does about as well as gated checkpoint
+    averaging and worse than EMA.
+  - The operators' only niche is early training, before averaging helps. There, real AdamW
+    steps are far better (+0.044 vs +0.008 at h = 200), at 15× the compute.
+- **Operator as a candidate: weak positive.** Adding the operator to the selector gains
+  +0.0009 to +0.0011 nats (CIs exclude 0 for Stage B and residual). It costs +26 fb-eq per
+  application plus the amortized training. This is small, comes entirely from early-training
+  parents, and does not survive into the interleaved protocol (≤ 0.0003).
+- **H2 (unseen initializations) — supported for what is learned.** Train-root and held-out
+  gains agree within ±0.004 nats for every operator. Generalization across initializations
+  is not the bottleneck; what is learned is the bottleneck.
+- **H3 (conditional improvement) — first positive evidence, on validation roots only.**
+  - The condition-aware behavioural objective produces requested-class steering:
+    NLL specificity +0.012 [+0.007, +0.017], accuracy specificity +0.41 pp, 8/8 groups.
+  - It also produces a positively ordered loss-request response: Spearman +0.51
+    [+0.38, +0.62].
+  - Both are absent without it, so the session-1 null result was the objective, not the
+    architecture.
+  - Calibration of the scalar request is poor, and steering costs overall improvement.
+  - This is the most distinctive result so far. It still needs confirmation on locked test
+    roots.
+- **H4 (usefulness) — not supported.** In both protocols a free averaging selector beats
+  every operator. The amortized operator cost (population 6 min, training ≈ 25 min) buys no
+  advantage over it.
+- **H5:** not run.
+
+### Limitations
+- 8 validation groups; one population, one task, one operator seed per configuration.
+- **Selection noise:** checkpoint selection on noisy validation curves; selection and
+  reporting share roots (different splits).
+- **Shared α:** `operator_scaled` used α = 1 (= raw) in most cases, so it adds nothing here.
+- **Narrow regime:** constant-lr AdamW that overfits, which favours averaging. Results may
+  differ with lr decay or stronger regularization (ladder rung L3).
+- **H3 claims:** they rest on the accept/dev splits of validation roots and should be
+  pre-registered before any test-root run.
+
+### Recommended next steps
+1. **Do not unlock the test roots for H1/H4 yet.** On validation roots, the primary endpoint
+   of EXPERIMENTS §4 already favours the selector by a wide margin. Spending the one-time
+   test run on it now would only confirm a negative.
+2. **Pre-register H3 as the primary endpoint for the next comparative experiment.**
+   - Scale to ≈120 groups.
+   - Freeze the conditioned operator configuration and the selection rule. Average several
+     checkpoints or seeds to reduce selection noise.
+   - Then run `--final` once.
+3. **Make conditioning useful, not just present:**
+   - Combine the residual base (EMA rather than history_average, since EMA is stronger) with
+     the conditioned objective.
+   - Calibrate the scalar request.
+   - Report the steering-vs-overall-gain trade-off as a frontier.
+4. **Test whether averaging's dominance is a regime artifact:** an lr-decay/cosine population
+   (ladder L3), where late-training averaging gains shrink and the space left for a learned
+   update changes.
+5. **Give the operator EMA features** (`(EMA − θ)` per decay), so it can at least represent
+   the selector's best candidate. The coordinatewise operator currently cannot see the EMA.

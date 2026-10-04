@@ -31,7 +31,7 @@ configs. Nothing here is extrapolated.
   - child engine with safety guards and accept/rollback
   - one-shot evaluation protocol, interleaved protocol (E4) and recursion utility (E5)
   - group-level analysis
-- **Tests:** 40 passing in ≈10 s on the synthetic task:
+- **Tests:** 41 passing in ≈15 s on the synthetic task:
   - oracle round trip
   - exact branch replay
   - bitwise regeneration
@@ -129,6 +129,144 @@ Interpretation, at engineering scale only:
 Class-targeted branches improve the targeted class's loss by +0.221 nats and cost other
 classes −0.022. The data therefore contain a strong class-specific signal for H3 to learn.
 
-**Operator results: pending.** Stage A and Stage A+B operator training, one-shot evaluation
-and the interleaved protocol are running on this population. This entry will be updated
-with the measured numbers.
+#### Pilot results
+
+**Protocol.**
+- Validation roots × dev split: 8 init groups, 48 parent checkpoints spread over training, horizons 200 and 800.
+- All numbers are group-level means with 95% bootstrap CIs over groups. Gains are dev NLL in nats; positive is better.
+- Step sizes, and the Stage B operator's selected checkpoint, were chosen on the same validation roots' *accept* split.
+- Test roots and the test split were not touched.
+
+Configs:
+- Stage A: `configs/fmnist_pilot.yaml`, parameter-space Huber, NDE selection.
+- Stage B: `configs/fmnist_pilot_stage_b.yaml`, adds the behavioural child-loss term and functional selection. The selected checkpoint is step 750 of 3,000.
+
+**Calibration.** `adamw_full` scores 144 equivalent steps at h=200 and 591 at h=800. With a
+single noisy reference seed, the metric under-reads by ≈0.7×, so compare methods with
+`adamw_full` at the same horizon. In the interleaved protocol, `no_update` has speedup 1.00
+when starting at step 400. From step 1,600 it is 0.70, because the reference overfits and
+its best checkpoint comes earlier.
+
+**One-shot application, h = 200**
+
+| Method | Cost (fb eq.) | Ungated gain [95% CI] | Gated gain | Δacc |
+|---|---|---|---|---|
+| adamw_full | 200 | +0.0162 [+0.0120, +0.0206] | +0.0193 | +0.57 pp |
+| **operator, Stage B** | 13 | **+0.0099 [+0.0077, +0.0131]** | +0.0101 | +0.41 pp |
+| weight_scaling (tuned α = −0.05) | 0 | +0.0040 [+0.0030, +0.0050] | +0.0068 | +0.01 pp |
+| adamw_matched (13 steps) | 13 | +0.0016 [−0.0027, +0.0055] | +0.0064 | +0.03 pp |
+| linear / Adam extrapolation (tuned) | 0 | 0 (tuning chose α = 0) | 0 | 0 |
+| operator_scaled, Stage A (α = 0.03) | 13 | −0.0001 [−0.0003, +0.0001] | +0.0002 | 0 |
+| history_average | 0 | −0.0184 [−0.0207, −0.0151] | **+0.0133** | +0.10 pp |
+| operator, Stage A (raw) | 13 | −0.0281 [−0.0365, −0.0215] | +0.0009 | −0.82 pp |
+| foreign_delta | 0 | −0.0471 [−0.0588, −0.0362] | +0.0001 | −1.74 pp |
+
+At h=800:
+- `adamw_full` +0.0357
+- Stage B operator +0.0074 [+0.0048, +0.0110]
+- Stage A raw −0.0943 [−0.1123, −0.0804]
+
+**By training stage** (h = 200, ungated gain)
+
+| Stage | adamw_full | operator (B) | history_average | weight_scaling |
+|---|---|---|---|---|
+| early (< 10% of trunk) | +0.0442 | +0.0077 | −0.0918 | −0.0079 |
+| mid | +0.0069 | +0.0111 | +0.0167 | +0.0034 |
+| late (≥ 50%) | −0.0026 | +0.0108 | +0.0199 | +0.0166 |
+
+**Paired comparisons for the Stage B operator** (per-group differences)
+
+| Comparison | h | Mean | 95% CI | Groups favouring operator |
+|---|---|---|---|---|
+| vs no_update | 200 | +0.0099 | [+0.0077, +0.0131] | 8/8 |
+| vs weight_scaling | 200 | +0.0058 | [+0.0039, +0.0085] | 8/8 |
+| vs weight_scaling | 800 | +0.0033 | [+0.0012, +0.0064] | 7/8 |
+| gated, vs gated history_average | 200 | −0.0032 | [−0.0045, −0.0016] | 1/8 |
+| gated, vs gated history_average | 800 | −0.0048 | [−0.0061, −0.0032] | 1/8 |
+
+**Conditioning**
+
+- Stage A:
+  - The request-sweep Spearman is +0.80 [0.68, 0.91]. Asking for more gain orders the
+    outcomes correctly, but every outcome is a loss.
+  - Class specificity is −0.0002 [−0.0020, +0.0016].
+- Stage B:
+  - The Spearman is −0.36 [−0.52, −0.17], and class specificity −0.0004 [−0.0010, +0.0001].
+  - The behavioural term rewards improvement regardless of the request, and the operator
+    learned to ignore it.
+
+**Interleaved application (E4)**
+
+Protocol: 6 cycles of 400 AdamW steps plus one gated jump each, starting at steps 400 and
+1,600. Gains are against same-data AdamW at equal AdamW steps.
+
+- Stage B operator: +0.0028 [+0.0011, +0.0049] (P(group > 0) = 0.88), with 4.7 of 6 jumps
+  accepted.
+  - Speedup is 1.12 when starting at step 400.
+  - From step 1,600 it is 0.86, versus 0.70 for `no_update`.
+  - Extra compute: 78 fb-equivalents on top of 2,400 AdamW steps (+3%).
+- Stage A operator: +0.0001 [−0.0010, +0.0011]. The scaled variant is +0.0003 [−0.0004, +0.0009].
+- Tuned extrapolations chose α = 0 and are identical to AdamW.
+
+**What the operators learned.** Cosine of the proposed Δ (h = 200, validation parents) with
+simple directions:
+
+| Operator | recent velocity | +θ (weight growth) | Adam step | checkpoint average |
+|---|---|---|---|---|
+| Stage A | +0.82 early, +0.25 overall | +0.72 | +0.27 | −0.19 |
+| Stage B | −0.19 overall (−0.36 late) | +0.62 | −0.05 | +0.33 overall (+0.51 late) |
+
+- Stage A extrapolates trajectory and norm growth and overshoots.
+- Stage B is not optimizer-like. It partly moves toward the recent-checkpoint average and
+  grows weights, yet it changes accuracy, which uniform rescaling does not.
+
+**Costs**
+- Population: 382 s on 4 processes.
+- Stage A training: 6 min on 1 core. Stage B: 23 min on 1 core.
+- One application: 13 batch-fb equivalents (~0.5 GFLOP).
+- Each one-shot evaluation: ~9.5 min.
+
+#### Interpretation against the hypotheses
+
+- **H1 (learnability) — partial.**
+  - Supervised imitation of recorded deltas (Stage A) does not produce useful updates.
+    Its deltas point roughly the right way (cosine 0.38–0.47 to AdamW), but it fits the
+    recorded deltas poorly (NDE 0.85) and hurts the function.
+  - With a behavioural objective (Stage B), a coordinatewise operator gives small,
+    consistent improvements at every training stage. It beats tuned rescaling, tuned
+    extrapolation and AdamW at matched per-application compute.
+- **H2 (unseen initializations) — promising, not established.** The gains are on
+  initializations never used for training. However, the same roots' accept split was used
+  for operator checkpoint selection and α tuning. Confirmation needs the locked test roots
+  plus a train-root vs. held-out gap measurement.
+- **H3 (conditional improvement) — not supported.** No class steering in either stage.
+  Scalar ordering appears only in Stage A, and only among harmful outcomes.
+- **H4 (usefulness) — not supported yet.**
+  - Per application, Stage B yields ≈60% of a 200-step AdamW continuation's gain at 6.5% of
+    its compute.
+  - It loses to free, gated checkpoint averaging. The interleaved gain is small (+0.003 nats).
+  - The amortized cost (dataset plus training) is far from paid back at this scale.
+- **H5:** not run.
+
+#### Limitations
+- 8 validation groups.
+- One population with fixed optimizer hyperparameters, one task, one operator training seed.
+- Selection and reporting share validation roots (different data splits).
+- The equivalent-steps metric under-reads with one reference seed.
+- The coordinatewise operator has no parameter interactions.
+
+#### Next experiment (proposed order)
+
+1. **Make the bar honest:** a gated *best-simple-baseline selector* (per parent, choose
+   among no_update / history_average / weight_scaling on the accept split), plus EMA.
+   Report every operator against it.
+2. **Residual-on-baseline operator:** train Stage B to propose a correction on top of
+   `history_average`. This tests whether the operator carries information beyond averaging.
+3. **Condition-aware behavioural loss for H3:** class-weighted child loss for class
+   requests; penalize |achieved − requested| for the loss request.
+4. **Memorization gap:** evaluate the same operator on training roots.
+5. **Analysis plan:** commit EXPERIMENTS.md §4 with pilot-based power. Group SDs of
+   0.002–0.005 nats imply ≈20–25 held-out groups to detect 0.003 nats at 80% power, so
+   scale to ≈120 init groups (60 / 30 / 30, about 20 min generation on 4 cores). Then run
+   the single `--final` evaluation on test roots.
+6. **Generalization ladder:** L1 (order variants), L3 (hyperparameter population), L5 (MNIST).

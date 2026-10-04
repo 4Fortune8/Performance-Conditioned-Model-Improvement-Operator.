@@ -75,19 +75,31 @@ All gains are signed so that positive = better (`metrics.gains`).
 
 ## 4. Analysis plan for the comparative experiment (fill in before unlocking test roots)
 
-> Status: **draft**. To be completed after the pilot, then committed before any `--final` run.
+> Status: **draft, updated with pilot numbers** (RESEARCH_LOG 2026-10-04). To be frozen, with the
+> final operator configuration, before any `--final` run.
 
-1. Population: `n_groups = ___` chosen from pilot variance so that a paired difference of
-   `___` nats is detectable with 80% power at α = 0.05 (paired t over groups as a planning
-   approximation).
-2. Primary endpoint: mean per-group report-split NLL gain of `operator_scaled` minus the
-   best tuned baseline (`adam_extrapolation` or `linear_extrapolation`), at horizon `___`,
-   on test roots and the official test split.
-3. Secondary endpoints: equivalent steps; controllability Spearman; class specificity; gains
-   by stage; interleaved steps-to-target (E4).
-4. Decision rules: H1 supported if the primary-endpoint CI excludes 0 in favour of the operator.
-   H3 supported if the specificity CI excludes 0 *and* the Spearman CI excludes 0. Report all
-   endpoints regardless of outcome.
+1. Population: `n_groups ≈ 120` (60 / 30 / 30). Pilot group-level SDs of paired
+   differences were 0.002–0.005 nats, so ≈ 20–25 held-out groups detect a 0.003-nat
+   paired difference with 80% power at α = 0.05 (paired t over groups as a planning
+   approximation). Confirm the SD on the new population's validation roots before
+   unlocking.
+2. Primary endpoint: mean per-group report-split NLL gain of the gated operator minus the
+   gated **best-simple-baseline selector** (no_update / history_average / weight_scaling,
+   chosen per parent on the accept split) at horizon 200, on test roots and the official
+   test split. The pilot showed gated checkpoint averaging is the strongest simple method,
+   so it must be inside the bar.
+3. Secondary endpoints:
+   - ungated gain vs. `adamw_matched` and `weight_scaling`
+   - equivalent steps relative to `adamw_full`
+   - controllability Spearman and class specificity
+   - gains by stage
+   - interleaved gain at equal AdamW steps (E4)
+   - train-root vs. held-out gap (H2)
+4. Decision rules:
+   - H1/H4 are supported only if the primary-endpoint CI excludes 0 in favour of the operator.
+   - H3 is supported only if both the specificity CI and the Spearman CI exclude 0 in the
+     right direction.
+   - Report all endpoints regardless of outcome.
 5. The operator configuration and the baseline grids are frozen at the commit that adds this
    plan.
 

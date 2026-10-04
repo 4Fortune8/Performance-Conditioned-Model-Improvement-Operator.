@@ -104,6 +104,7 @@ by implementing `Improver`.
 | `linear_extrapolation` | `baselines/extrapolation.py` | `α·(h/L)·(θ_t − θ_{t−L})`, α tuned per horizon |
 | `adam_extrapolation` | `baselines/extrapolation.py` | `−α·h·lr·m̂/(√v̂+ε)`, α tuned per horizon |
 | `history_average` | `baselines/averaging.py` | LAWA-style mean of θ and its lag snapshots (same trajectory, no alignment needed) |
+| `weight_scaling` | `baselines/scaling.py` | `α·θ` with α tuned on a signed grid: shrinkage (α<0) or logit sharpening (α>0); tests "operator = calibration" |
 | `random_norm_matched` | `baselines/controls.py` | Random direction with per-tensor norms of tuned linear extrapolation |
 | `foreign_delta` | `baselines/controls.py` | Real delta from a *different* training root at similar step/horizon, unaligned |
 | `operator` / `operator_scaled` | `operators/residual.py` | Raw, and with α tuned exactly like the baselines |
@@ -112,7 +113,8 @@ by implementing `Improver`.
 | `oracle` | `baselines/controls.py` | True recorded delta (round-trip test) |
 
 Step sizes α are tuned per horizon on **validation roots using the accept split**. The grid
-includes 0, so a tuned method can decline to move.
+includes 0, so a tuned method can decline to move. `weight_scaling` uses its own signed
+grid (`scaling_grid`).
 
 ## 5. Evaluation protocol
 

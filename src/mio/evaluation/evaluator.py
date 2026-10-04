@@ -30,6 +30,7 @@ from mio.baselines.averaging import HistoryAverage
 from mio.baselines.controls import ForeignDelta, RandomNormMatched
 from mio.baselines.conventional import ContinuedAdamW, NoUpdate, equivalent_steps, reference_curve
 from mio.baselines.extrapolation import AdamExtrapolation, LinearExtrapolation, Scaled, tune_alpha
+from mio.baselines.scaling import WeightScaling
 from mio.config import ExperimentConfig, SafetyConfig
 from mio.datasets.tasks import TaskData, load_task
 from mio.datasets.transitions import load_transitions
@@ -155,6 +156,9 @@ def build_methods(cfg: ExperimentConfig, store: CheckpointStore, task: TaskData,
     if "adam_extrapolation" in methods:
         alphas["adam"] = tune_alpha(lambda a: AdamExtrapolation(oc.beta1, oc.beta2, oc.eps, a), tune_states,
                                     ec.horizons, ec.alpha_grid, accept_score)
+    if "weight_scaling" in methods:
+        alphas["scaling"] = tune_alpha(lambda a: WeightScaling(a), tune_states, ec.horizons, ec.scaling_grid,
+                                       accept_score)
     if operator is not None and "operator_scaled" in methods:
         alphas["operator"] = tune_alpha(
             lambda a: Scaled(operator, a), tune_states, ec.horizons, ec.alpha_grid, accept_score,
@@ -172,6 +176,8 @@ def build_methods(cfg: ExperimentConfig, store: CheckpointStore, task: TaskData,
             improvers.append(AdamExtrapolation(oc.beta1, oc.beta2, oc.eps, alphas["adam"]))
         elif m == "history_average":
             improvers.append(HistoryAverage())
+        elif m == "weight_scaling":
+            improvers.append(WeightScaling(alphas["scaling"]))
         elif m == "random_norm_matched":
             improvers.append(RandomNormMatched(store.spec, LinearExtrapolation(max(lags), alphas["linear"]), ec.seed))
         elif m == "foreign_delta":

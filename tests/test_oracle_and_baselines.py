@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from mio.baselines.averaging import HistoryAverage
+from mio.baselines.scaling import WeightScaling
 from mio.baselines.controls import ForeignDelta, Oracle, RandomNormMatched
 from mio.baselines.conventional import ContinuedAdamW, NoUpdate, equivalent_steps, reference_envelope
 from mio.baselines.extrapolation import AdamExtrapolation, LinearExtrapolation, tune_alpha
@@ -62,6 +63,7 @@ def test_baseline_formulas(population, synthetic_cfg):
     ad = AdamExtrapolation(oc.beta1, oc.beta2, oc.eps, alpha={40: 2.0}).propose(state, cond).delta
     u = adam_direction(state.opt, oc.beta1, oc.beta2, oc.eps)
     assert torch.allclose(ad, -2.0 * 40 * state.hparams["lr"] * u)
+    assert torch.allclose(WeightScaling(alpha=-0.05).propose(state, cond).delta, -0.05 * state.theta)
     avg = HistoryAverage().propose(state, cond).delta
     assert torch.allclose(state.theta + avg, torch.stack([state.theta, *state.history.values()]).mean(0), atol=1e-7)
     rnd = RandomNormMatched(population.spec, LinearExtrapolation(lag, 1.0)).propose(state, cond).delta

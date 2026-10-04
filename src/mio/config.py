@@ -194,6 +194,7 @@ class EvaluationConfig:
             "linear_extrapolation",
             "adam_extrapolation",
             "history_average",
+            "weight_scaling",
             "random_norm_matched",
             "foreign_delta",
             "adamw_matched",
@@ -209,6 +210,9 @@ class EvaluationConfig:
     class_requests: bool = True
     # Step-size grid for tuned methods; includes 0 so a tuned method may decline to move.
     alpha_grid: list[float] = field(default_factory=lambda: [0.0, 0.01, 0.03, 0.1, 0.25, 0.5, 1.0, 2.0])
+    # Signed grid for weight_scaling (delta = alpha * theta): negative shrinks, positive sharpens.
+    scaling_grid: list[float] = field(
+        default_factory=lambda: [-0.1, -0.05, -0.02, -0.01, 0.0, 0.01, 0.02, 0.05, 0.1, 0.2])
     accept_min_gain: float = 0.0
     reference_multiple: int = 4  # reference AdamW curve length = multiple * horizon
     reference_eval_every: int = 10

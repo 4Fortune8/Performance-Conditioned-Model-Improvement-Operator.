@@ -79,13 +79,13 @@ These came from inspecting the first smoke results. They matter for any future c
 
 | Horizon | Method | Dev NLL gain | Note |
 |---|---|---|---|
-| 100 | adamw_full | +0.0226 | equivalent steps 63 |
+| 100 | adamw_full | +0.0226 | equivalent steps 57 |
 | 100 | adamw_matched (13 steps) | +0.0055 | |
 | 100 | tuned linear / Adam extrapolation, operator_scaled | 0.0000 | tuning chose α = 0 |
 | 100 | history_average | −0.0439 | gated +0.0074 |
 | 100 | foreign_delta | −0.0420 | |
 | 100 | operator (raw) | −0.0452 | cos to AdamW 0.37 |
-| 400 | adamw_full | +0.0650 | equivalent steps 506 |
+| 400 | adamw_full | +0.0650 | equivalent steps 389 |
 | 400 | operator (raw) | −0.2830 | cos to AdamW 0.47 |
 | 400 | foreign_delta | −0.0944 | |
 

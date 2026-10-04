@@ -52,6 +52,8 @@ python scripts/build_dataset.py      --config configs/fmnist_pilot.yaml         
 python scripts/train_operator.py     --config configs/fmnist_pilot.yaml               # results/<experiment>/operator/
 python scripts/evaluate_operator.py  --config configs/fmnist_pilot.yaml               # results/<experiment>/eval_val_dev/
 python scripts/run_interleaved.py    --config configs/fmnist_pilot.yaml               # results/<experiment>/interleaved_val_dev/
+python scripts/evaluate_operator.py  --config configs/fmnist_pilot.yaml --root-split train --no-reference  # memorization gap
+python scripts/compare_operators.py  --out results/comparison.md --run LABEL VAL_EVAL_DIR [TRAIN_EVAL_DIR] ...
 ```
 
 `evaluate_operator.py --final` evaluates **test roots on the official test split**. It is
@@ -65,6 +67,8 @@ reserved for the single, pre-registered final run (see EXPERIMENTS.md §4).
 | `configs/smoke_test.yaml` | Fashion-MNIST engineering smoke test: 8 initializations, ~4 epochs, 3 branches at 3 points |
 | `configs/fmnist_pilot.yaml` | First research pilot: 40 initializations, 20 epochs, 3 branches at 7 points |
 | `configs/fmnist_pilot_stage_b.yaml` | Same pilot data, operator with the behavioural (Stage B) term and functional selection |
+| `configs/fmnist_pilot_residual.yaml` | Stage B as a residual on `history_average` (does the operator know more than averaging?) |
+| `configs/fmnist_pilot_conditioned.yaml` | Stage B with the condition-aware behavioural objective (H3) |
 
 Configs are typed (`src/mio/config.py`), reject unknown keys, and support
 `inherit: base.yaml`. Population size, checkpoint schedule, branch count and horizons,

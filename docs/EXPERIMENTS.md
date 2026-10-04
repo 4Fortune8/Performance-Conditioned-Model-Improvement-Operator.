@@ -36,6 +36,8 @@ until the analysis plan in §4 is written and committed.
 | Unconditioned | `features` without `condition` |
 | Successes only (no hindsight) | `successful_only: true` |
 | Stage B behavioural | `behavioral_weight > 0`, `selection: accept_gain` |
+| Residual on averaging | `base: history_average` (`configs/fmnist_pilot_residual.yaml`) |
+| Condition-aware behavioural (H3) | `behavioral_objective: conditioned` (`configs/fmnist_pilot_conditioned.yaml`) |
 | Non-equivariant | planned: chunked operator |
 | Aligned | planned: Git Re-Basin weight matching to a reference root |
 
@@ -84,9 +86,9 @@ All gains are signed so that positive = better (`metrics.gains`).
    approximation). Confirm the SD on the new population's validation roots before
    unlocking.
 2. Primary endpoint: mean per-group report-split NLL gain of the gated operator minus the
-   gated **best-simple-baseline selector** (no_update / history_average / weight_scaling,
-   chosen per parent on the accept split) at horizon 200, on test roots and the official
-   test split. The pilot showed gated checkpoint averaging is the strongest simple method,
+   gated **best-simple-baseline selector** `select_simple` at horizon 200, on test roots and
+   the official test split. The selector chooses per parent on the accept split among
+   no_update, history_average, ema_0.99, ema_0.999 and weight_scaling. The pilot showed gated checkpoint averaging is the strongest simple method,
    so it must be inside the bar.
 3. Secondary endpoints:
    - ungated gain vs. `adamw_matched` and `weight_scaling`
@@ -110,7 +112,11 @@ python scripts/generate_population.py --config configs/fmnist_pilot.yaml --worke
 python scripts/build_dataset.py      --config configs/fmnist_pilot.yaml
 python scripts/train_operator.py     --config configs/fmnist_pilot.yaml
 python scripts/evaluate_operator.py  --config configs/fmnist_pilot.yaml           # val roots, dev split
+python scripts/evaluate_operator.py  --config configs/fmnist_pilot.yaml --root-split train --no-reference  # H2 gap
 python scripts/run_interleaved.py    --config configs/fmnist_pilot.yaml           # E4, val roots, dev split
+python scripts/compare_operators.py  --out results/comparison.md \
+    --run stageB results/fmnist_pilot_stage_b/eval_val_dev results/fmnist_pilot_stage_b/eval_train_dev \
+    --run residual results/fmnist_pilot_residual/eval_val_dev results/fmnist_pilot_residual/eval_train_dev
 # Final, once, after the analysis plan is committed:
 python scripts/evaluate_operator.py  --config configs/<final>.yaml --final       # test roots, test split
 ```

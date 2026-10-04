@@ -39,6 +39,8 @@ The *init group* `g####` is the unit of partitioning and of statistical analysis
 - **Trunk:** AdamW at constant lr for `total_steps`.
 - **Anchors** (params + AdamW state + metrics on `train_eval`, `accept`, `dev`) are spaced
   geometrically early (`first × growth^k`) and then linearly every `linear_every`.
+  Each anchor also stores bias-corrected EMAs of the trunk iterates for every decay in
+  `ema_decays` (`EMATracker`; tracking does not change training).
   For each anchor at step t, **history snapshots** (params only) are saved at
   `t − L` for each `L ∈ history_lags`.
 - **Branches:** at every k-th eligible anchor, `n_branches` copies continue for
@@ -86,6 +88,18 @@ success rates and gains per intervention and partition, plus the class-targeting
   condition is the hindsight outcome, with random objective dropout. The last layer is
   zero-initialized, so the starting operator is "no update". Model selection uses
   normalized delta error (NDE = ‖Δ̂−Δ‖²/‖Δ‖²) on validation-root transitions.
+- **Training (Stage B):** adds a behavioural term computed through the functional model on
+  training-split minibatches; selection by accept-split gain on validation roots
+  (`selection: accept_gain`). Two objectives:
+  - `improve`: child-minus-parent loss on successful transitions. The request is ignored.
+  - `conditioned` (H3): hindsight matching in function space. A sample draws a transition and
+    one objective: the overall loss, or one class (half of class requests come from
+    class-weighted branches with their target class). It conditions on that transition's
+    accept-split gain for the objective alone and penalizes |g − g*|, where g is the child's
+    minibatch gain on the objective and g* the transition's recorded `train_eval` gain.
+- **Residual base** (`operator.base: history_average`): the operator proposes the base update
+  plus a learned correction. Imitation targets and behavioural deltas are taken relative to
+  the base, and the zero-initialized operator equals the base.
 - **`ConditionPolicy`** turns "improve objective X" into a concrete request: a quantile of
   gains achieved by the k nearest training transitions in (horizon, log step).
 - **Cost:** analytic FLOPs per application, converted to batch forward+backward
@@ -104,6 +118,9 @@ by implementing `Improver`.
 | `linear_extrapolation` | `baselines/extrapolation.py` | `α·(h/L)·(θ_t − θ_{t−L})`, α tuned per horizon |
 | `adam_extrapolation` | `baselines/extrapolation.py` | `−α·h·lr·m̂/(√v̂+ε)`, α tuned per horizon |
 | `history_average` | `baselines/averaging.py` | LAWA-style mean of θ and its lag snapshots (same trajectory, no alignment needed) |
+| `ema_<decay>` | `baselines/averaging.py` | Move to the bias-corrected EMA of the trunk iterates (Polyak averaging) |
+| `select_simple` | `baselines/selector.py` | Per parent, the candidate in `selector_candidates` with the best accept-split gain (no_update included). The primary comparator |
+| `select_with_operator` | `baselines/selector.py` | The same selection with the operator added to the candidates |
 | `weight_scaling` | `baselines/scaling.py` | `α·θ` with α tuned on a signed grid: shrinkage (α<0) or logit sharpening (α>0); tests "operator = calibration" |
 | `random_norm_matched` | `baselines/controls.py` | Random direction with per-tensor norms of tuned linear extrapolation |
 | `foreign_delta` | `baselines/controls.py` | Real delta from a *different* training root at similar step/horizon, unaligned |
@@ -140,6 +157,13 @@ grid (`scaling_grid`).
    - cosine to the `adamw_full` delta
    - delta norms, safety flags and cost.
 
+Reports add a gated paired comparison with `select_simple` and the selectors' choice counts.
+`scripts/compare_operators.py` merges runs of several operators on the same parents and
+checks that their shared baseline rows agree. It reports gated differences vs `select_simple`,
+operator-vs-operator differences and conditioning metrics. Given train-root runs
+(`evaluate_operator.py --root-split train --no-reference`), it also reports the train-root vs
+held-out gap. That comparison is unpaired, and the baselines show the gap expected by chance.
+
 Development runs use **validation roots × dev split**. The final report uses
 **test roots × official test split**, behind `--final` / `allow_test=True`.
 
@@ -171,8 +195,8 @@ outputs. Every proposal is logged, and rejection rolls back.
 - One architecture family (MLP) and one optimizer (AdamW, constant lr trunk).
 - The coordinatewise operator has no interaction between parameters within a step.
   Neuron-level / equivariant attention is the planned v2.
-- Behavioural (function-space) training is not implemented yet. Stage A regresses
-  parameter-space deltas, which can be harmful in high-curvature directions (see
-  RESEARCH_LOG).
+- Stage A regresses parameter-space deltas, which is harmful in high-curvature directions
+  (see RESEARCH_LOG); Stage B adds a function-space term but samples only a few transitions
+  per step, which makes training slow on CPU.
 - Recursion synthesizes history from the operator's own step (documented input shift).
 - No alignment; the foreign-delta control measures what is lost by its absence.

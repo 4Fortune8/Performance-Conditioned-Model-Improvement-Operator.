@@ -4,9 +4,10 @@ For each init group ``g`` and order variant ``o`` (root ``g####o#``):
 
 1. Initialize from ``derive_seed(master, "init", g)`` and train a trunk with
    AdamW under order seed ``derive_seed(master, "order", g, o)``.
-2. Save *anchor* checkpoints (params + AdamW state + metrics) on a
-   geometric-then-linear schedule, and *history* snapshots (params only) at
-   ``t - lag`` for every anchor ``t`` and lag in ``history_lags``.
+2. Save *anchor* checkpoints (params + AdamW state + metrics + optional
+   bias-corrected EMAs of the iterates) on a geometric-then-linear schedule,
+   and *history* snapshots (params only) at ``t - lag`` for every anchor ``t``
+   and lag in ``history_lags``.
 3. At every k-th eligible anchor, spawn ``n_branches`` branches with
    randomized interventions and a fresh order seed; save branch checkpoints
    at each configured horizon.
@@ -33,7 +34,7 @@ from mio.models.registry import build_model
 from mio.state import OptState
 from mio.trajectories.branching import anchor_schedule, apply_intervention, branch_points, draw_interventions
 from mio.trajectories.checkpoints import save_checkpoint_tensors
-from mio.trajectories.training import TrainSettings, train_steps
+from mio.trajectories.training import EMATracker, TrainSettings, train_steps
 from mio.utils.logging import get_logger
 from mio.utils.reproducibility import configure_determinism, derive_seed, environment_info, git_commit
 from mio.utils.serialization import read_json, read_jsonl, write_json, write_jsonl
@@ -88,8 +89,10 @@ def generate_root(cfg: ExperimentConfig, task: TaskData, root: dict, out_dir: Pa
     def trunk_id(step: int) -> str:
         return f"{root_id}-trunk-s{step:06d}"
 
-    def save(rec: dict, theta: torch.Tensor, opt: OptState | None) -> None:
-        save_checkpoint_tensors(out_dir, rec, theta, opt)
+    ema = EMATracker(pc.checkpoints.ema_decays, model.num_params)  # EMAs of the trunk iterates
+
+    def save(rec: dict, theta: torch.Tensor, opt: OptState | None, averages: dict | None = None) -> None:
+        save_checkpoint_tensors(out_dir, rec, theta, opt, averages)
         records.append(rec)
 
     def save_trunk(step: int, theta: torch.Tensor, opt: OptState) -> None:
@@ -110,15 +113,19 @@ def generate_root(cfg: ExperimentConfig, task: TaskData, root: dict, out_dir: Pa
             },
             "has_optimizer_state": kind == "anchor",
         }
+        averages = None
         if kind == "anchor":
             rec["metrics"] = _measure(model, theta, task)
             rec["history"] = {str(l): trunk_id(step - l) for l in lags if step - l >= 0}
-        save(rec, theta, opt if kind == "anchor" else None)
+            averages = ema.corrected()
+            rec["ema_decays"] = sorted(averages)
+        save(rec, theta, opt if kind == "anchor" else None, averages)
         trunk_ids[step] = cid
 
     save_trunk(0, theta0, opt0)
 
     def trunk_cb(k: int, theta: torch.Tensor, opt: OptState) -> None:
+        ema.update(theta)
         if k in anchor_set or k in history_steps:
             save_trunk(k, theta, opt)
         if k in bpoints:

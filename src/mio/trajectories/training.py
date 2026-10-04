@@ -165,3 +165,32 @@ def train_steps(
         if callback is not None:
             callback(k + 1, theta, opt)
     return SegmentResult(theta, opt, n_steps, time.perf_counter() - t0, losses)
+
+
+class EMATracker:
+    """Bias-corrected exponential moving averages of the iterates, for several decays.
+
+    ``raw_d <- d * raw_d + (1 - d) * theta_k`` after every step ``k`` (zero-initialized), and
+    ``ema_d(t) = raw_d / (1 - d^t)``: an exponentially weighted mean of theta_1..theta_t. A tracker
+    can resume from stored bias-corrected EMAs at step ``t`` (``from_corrected``).
+    """
+
+    def __init__(self, decays, n: int, step: int = 0):
+        self.raw = {float(d): torch.zeros(n) for d in decays}
+        self.step = step
+
+    @classmethod
+    def from_corrected(cls, ema: dict[float, torch.Tensor], step: int) -> "EMATracker":
+        t = cls([], 0, step)
+        t.raw = {float(d): e * (1.0 - d**step) for d, e in ema.items()}
+        return t
+
+    def update(self, theta: torch.Tensor) -> None:
+        self.step += 1
+        for d, e in self.raw.items():
+            e.mul_(d).add_(theta, alpha=1.0 - d)
+
+    def corrected(self) -> dict[float, torch.Tensor]:
+        if self.step == 0:
+            return {}
+        return {d: e / (1.0 - d**self.step) for d, e in self.raw.items()}

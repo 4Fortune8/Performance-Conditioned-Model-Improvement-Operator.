@@ -15,6 +15,7 @@ A checkpoint record (``dict``) has, among others:
     step            AdamW step count (global, including the trunk before a branch)
     parent_id       previous saved checkpoint on the same line (lineage)
     history         {lag: checkpoint_id} for trunk anchors
+    ema_decays      decays of the EMA tensors stored with a trunk anchor (``ema_<decay>``)
     branch          {...} intervention metadata for branch checkpoints
     metrics         {split: metrics} for anchors (train_eval / accept / dev only)
     hparams         optimizer settings in effect
@@ -38,13 +39,20 @@ def checkpoint_path(population_dir: Path, root_id: str, checkpoint_id: str) -> P
     return population_dir / "tensors" / root_id / f"{checkpoint_id}.safetensors"
 
 
+def ema_key(decay: float) -> str:
+    return f"ema_{decay:g}"
+
+
 def save_checkpoint_tensors(
-    population_dir: Path, record: dict, theta: torch.Tensor, opt: OptState | None
+    population_dir: Path, record: dict, theta: torch.Tensor, opt: OptState | None,
+    ema: dict[float, torch.Tensor] | None = None,
 ) -> None:
     tensors = {"theta": theta}
     if opt is not None:
         tensors["adam_m"] = opt.m
         tensors["adam_v"] = opt.v
+    for d, e in (ema or {}).items():
+        tensors[ema_key(d)] = e
     save_tensors(
         checkpoint_path(population_dir, record["root_id"], record["id"]),
         tensors,
@@ -130,6 +138,10 @@ class CheckpointStore:
         t = self._load(checkpoint_id)
         return OptState(t["adam_m"].clone(), t["adam_v"].clone(), int(rec["step"]))
 
+    def ema(self, checkpoint_id: str) -> dict[float, torch.Tensor]:
+        t = self._load(checkpoint_id)
+        return {float(d): t[ema_key(float(d))].clone() for d in self.records[checkpoint_id].get("ema_decays", [])}
+
     def model_state(self, checkpoint_id: str, metric_split: str = "accept") -> ModelState:
         rec = self.records[checkpoint_id]
         history = {int(lag): self.theta(hid) for lag, hid in rec.get("history", {}).items()}
@@ -138,6 +150,7 @@ class CheckpointStore:
             step=rec["step"],
             history=history,
             opt=self.opt_state(checkpoint_id),
+            ema=self.ema(checkpoint_id),
             metrics=rec["metrics"][metric_split],
             hparams=rec["hparams"],
             checkpoint_id=checkpoint_id,

@@ -16,6 +16,21 @@ model into the operator. This rewards producing a better *function* rather
 than reconstructing a recorded delta. Model selection can use the functional
 criterion ``selection: accept_gain`` (mean accept-split loss gain on
 validation roots under the inference-time request policy).
+
+``behavioral_objective: conditioned`` replaces "improve regardless of the
+request" with hindsight *matching* in function space, so the request has to be
+read: a behavioural sample draws a transition and one objective -- the overall
+loss, or (with probability ``class_request_prob``) one class, drawn half of the
+time from class-weighted branches with their target class -- conditions the
+operator on that transition's achieved accept-split gain for the objective
+alone, and penalizes ``|g - g*|``, where ``g`` is the child's training-minibatch
+gain on the objective (class-k examples only for a class request) and ``g*`` is
+the transition's recorded gain on ``train_eval`` for the same objective. All
+transitions are used, so the operator also sees what small or negative
+requests correspond to.
+
+With ``base`` set, targets and behavioural deltas are taken relative to the
+base update (see ``residual.py``).
 """
 
 from __future__ import annotations
@@ -26,6 +41,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from mio.baselines.averaging import averaging_improver
 from mio.config import ExperimentConfig
 from mio.evaluation.metrics import objective_names
 from mio.operators.features import FeatureBuilder, FeatureSpec
@@ -42,13 +58,16 @@ log = get_logger("mio.operator")
 class TransitionFeatureCache:
     """Caches per-source states / features and per-transition normalized targets."""
 
-    def __init__(self, store: CheckpointStore, builder: FeatureBuilder, metric_split: str, target_clip: float):
+    def __init__(self, store: CheckpointStore, builder: FeatureBuilder, metric_split: str, target_clip: float,
+                 base: str | None = None):
         self.store = store
         self.builder = builder
         self.metric_split = metric_split
         self.target_clip = target_clip
+        self._base = averaging_improver(base) if base else None
         self._states: dict[str, ModelState] = {}
         self._xp: dict[str, torch.Tensor] = {}
+        self._base_deltas: dict[str, torch.Tensor] = {}
 
     def state(self, source_id: str) -> ModelState:
         if source_id not in self._states:
@@ -60,12 +79,22 @@ class TransitionFeatureCache:
             self._xp[source_id] = self.builder.param_features(self.state(source_id))
         return self._xp[source_id]
 
+    def base_delta(self, source_id: str, horizon: int) -> torch.Tensor | float:
+        """Residual base update (horizon-independent averaging bases only); 0 without a base."""
+        if self._base is None:
+            return 0.0
+        if source_id not in self._base_deltas:
+            self._base_deltas[source_id] = self._base.propose(self.state(source_id), Condition(horizon)).delta
+        return self._base_deltas[source_id]
+
     def delta(self, t: dict) -> torch.Tensor:
         return self.store.theta(t["target_id"]) - self.state(t["source_id"]).theta
 
     def target(self, t: dict) -> torch.Tensor:
+        """Recorded delta minus the base update, in Adam units."""
         scale = FeatureBuilder.target_scale(self.state(t["source_id"]), t["horizon"])
-        return (self.delta(t) / scale).clamp(-self.target_clip, self.target_clip)
+        residual = self.delta(t) - self.base_delta(t["source_id"], t["horizon"])
+        return (residual / scale).clamp(-self.target_clip, self.target_clip)
 
     def condition(self, t: dict) -> Condition:
         return Condition(horizon=t["horizon"], gains=dict(t["gains"][self.metric_split]))
@@ -99,7 +128,7 @@ def evaluate_operator_fit(op: LearnedOperator, cache: TransitionFeatureCache, tr
         y = cache.target(t)
         losses.append(float(F.huber_loss(y_hat, y, delta=huber_delta)))
         delta = cache.delta(t)
-        pred = y_hat * FeatureBuilder.target_scale(state, t["horizon"])
+        pred = y_hat * FeatureBuilder.target_scale(state, t["horizon"]) + cache.base_delta(t["source_id"], t["horizon"])
         ndes.append(float((pred - delta).pow(2).sum() / delta.pow(2).sum().clamp_min(1e-30)))
         coss.append(float(F.cosine_similarity(pred, delta, dim=0)))
     if not transitions:
@@ -128,6 +157,45 @@ def functional_fit(op: LearnedOperator, cache: TransitionFeatureCache, source_id
             gains.append(state.metrics["loss"] - loss)
     return {"accept_gain_mean": float(np.mean(gains)) if gains else float("nan"),
             "accept_success_rate": float(np.mean([g > 0 for g in gains])) if gains else float("nan")}
+
+
+def _spearman(x, y) -> float:
+    rx, ry = np.argsort(np.argsort(x)).astype(float), np.argsort(np.argsort(y)).astype(float)
+    if rx.std() == 0 or ry.std() == 0:
+        return float("nan")
+    return float(np.corrcoef(rx, ry)[0, 1])
+
+
+@torch.no_grad()
+def conditioning_fit(op: LearnedOperator, cache: TransitionFeatureCache, source_ids: list[str], horizons: list[int],
+                     policy: ConditionPolicy, model, task: TaskData, sweep: list[float], quantile: float) -> dict:
+    """Does the operator respond to requests? (validation roots, accept split; logged, not used for selection)
+
+    sweep_spearman: Spearman(requested, achieved loss gain) across request quantiles, per (source, horizon)
+    class_specificity: requested-class gain minus mean other-class gain for single-class requests
+    """
+    accept = task.split("accept")
+    rhos, specs = [], []
+    for sid in source_ids:
+        state = cache.state(sid)
+        parent = evaluate(model, state.theta, accept, task.num_classes)
+        for h in horizons:
+            req, got = [], []
+            for q in sweep:
+                cond = policy.request(state, h, "loss", q)
+                child = state.theta + op.propose(state, cond).delta
+                req.append(cond.gains["loss"])
+                got.append(parent["loss"] - evaluate(model, child, accept, task.num_classes)["loss"])
+            rho = _spearman(np.array(req), np.array(got))
+            if not np.isnan(rho):
+                rhos.append(rho)
+            for k in range(task.num_classes):
+                cond = policy.request(state, h, f"class_{k}", quantile)
+                m = evaluate(model, state.theta + op.propose(state, cond).delta, accept, task.num_classes)
+                g = np.array(parent["class_loss"]) - np.array(m["class_loss"])
+                specs.append(float(g[k] - np.delete(g, k).mean()))
+    return {"sweep_spearman": float(np.mean(rhos)) if rhos else float("nan"),
+            "class_specificity": float(np.mean(specs)) if specs else float("nan")}
 
 
 def train_operator(
@@ -165,7 +233,7 @@ def train_operator(
     )
     builder = FeatureBuilder(store.spec, fspec)
     gscale = gain_scales(train_transitions, list(fspec.objectives), metric_split)
-    cache = TransitionFeatureCache(store, builder, metric_split, oc.target_clip)
+    cache = TransitionFeatureCache(store, builder, metric_split, oc.target_clip, oc.base)
 
     net = CoordinatewiseNet(fspec.n_param, fspec.n_global, oc.hidden)
     # Input normalization from a sample of training transitions.
@@ -175,7 +243,7 @@ def train_operator(
     xg_s = torch.stack([builder.global_features(cache.state(t["source_id"]), cache.condition(t), gscale)
                         for t in sample])
     net.set_normalization(xp_s, xg_s)
-    op = LearnedOperator(net, store.spec, fspec, gscale, batch_size_for_cost=opt_cfg.batch_size)
+    op = LearnedOperator(net, store.spec, fspec, gscale, batch_size_for_cost=opt_cfg.batch_size, base=oc.base)
 
     optim = torch.optim.AdamW(net.parameters(), lr=oc.lr, weight_decay=oc.weight_decay)
     history: list[dict] = []
@@ -193,16 +261,39 @@ def train_operator(
     policy = ConditionPolicy(train_transitions, metric_split)
     val_horizons = sorted(cfg.evaluation.horizons)
     train_data = task.split("train") if task is not None else None
+    class_index = ([torch.nonzero(train_data.y == k).squeeze(1) for k in range(num_classes)]
+                   if train_data is not None else None)
+    targeted = [t for t in train_transitions if t["intervention"].get("kind") == "class_weight"]
 
     def validate() -> dict:
         fit = evaluate_operator_fit(op, cache, val_transitions, oc.huber_delta)
         if task is not None and model is not None and val_sources:
             fit.update(functional_fit(op, cache, val_sources, val_horizons, policy, model, task,
                                       cfg.evaluation.request_quantile))
+            if "condition" in fspec.groups:
+                fit.update(conditioning_fit(op, cache, val_sources[: max(1, len(val_sources) // 2)], val_horizons,
+                                            policy, model, task, cfg.evaluation.request_sweep,
+                                            cfg.evaluation.request_quantile))
         return fit
 
     def score(fit: dict) -> float:
         return -fit.get("nde_mean", float("inf")) if oc.selection == "nde" else fit.get("accept_gain_mean", -float("inf"))
+
+    def child_delta(t: dict, xg: torch.Tensor) -> torch.Tensor:
+        state = cache.state(t["source_id"])
+        return (net(cache.xp(t["source_id"]), xg) * FeatureBuilder.target_scale(state, t["horizon"])
+                + cache.base_delta(t["source_id"], t["horizon"]))
+
+    def batch_gain(state: ModelState, delta: torch.Tensor, pool: torch.Tensor | None) -> torch.Tensor:
+        """Parent-minus-child cross-entropy on one training minibatch (from ``pool`` indices if given)."""
+        if pool is None:
+            bidx = torch.randint(len(train_data), (oc.behavioral_batch,), generator=gen)
+        else:
+            bidx = pool[torch.randint(len(pool), (oc.behavioral_batch,), generator=gen)]
+        x, y = train_data.x[bidx], train_data.y[bidx]
+        with torch.no_grad():
+            parent_loss = F.cross_entropy(model.forward(state.theta, x), y)
+        return parent_loss - F.cross_entropy(model.forward(state.theta + delta, x), y)
 
     def behavioral_loss() -> torch.Tensor:
         """Child-minus-parent training loss for a few successful transitions (full delta)."""
@@ -210,14 +301,31 @@ def train_operator(
         pool = successful or train_transitions
         for i in rng.integers(len(pool), size=oc.behavioral_transitions):
             t = pool[i]
+            xg = builder.global_features(cache.state(t["source_id"]), cache.condition(t), gscale, masked())
+            total = total - batch_gain(cache.state(t["source_id"]), child_delta(t, xg), None)
+        return total / oc.behavioral_transitions
+
+    def conditioned_behavioral_loss() -> torch.Tensor:
+        """Hindsight matching in function space: |achieved - recorded| gain on the requested objective."""
+        total = torch.zeros(())
+        for _ in range(oc.behavioral_transitions):
+            pool = None
+            if rng.random() < oc.class_request_prob:
+                if targeted and rng.random() < oc.class_targeted_prob:
+                    t = targeted[rng.integers(len(targeted))]
+                    k = int(t["intervention"]["target_class"])
+                else:
+                    t = train_transitions[rng.integers(len(train_transitions))]
+                    k = int(rng.integers(num_classes))
+                obj, pool = f"class_{k}", class_index[k]
+            else:
+                t = train_transitions[rng.integers(len(train_transitions))]
+                obj = "loss"
             state = cache.state(t["source_id"])
-            xg = builder.global_features(state, cache.condition(t), gscale, masked())
-            delta = net(cache.xp(t["source_id"]), xg) * FeatureBuilder.target_scale(state, t["horizon"])
-            bidx = torch.randint(len(train_data), (oc.behavioral_batch,), generator=gen)
-            x, y = train_data.x[bidx], train_data.y[bidx]
-            with torch.no_grad():
-                parent_loss = F.cross_entropy(model.forward(state.theta, x), y)
-            total = total + F.cross_entropy(model.forward(state.theta + delta, x), y) - parent_loss
+            cond = Condition(horizon=t["horizon"], gains={obj: t["gains"][metric_split][obj]})
+            xg = builder.global_features(state, cond, gscale)
+            g = batch_gain(state, child_delta(t, xg), pool)
+            total = total + (g - t["gains"]["train_eval"][obj]).abs()
         return total / oc.behavioral_transitions
 
     initial_fit = validate()
@@ -238,7 +346,7 @@ def train_operator(
         loss = F.huber_loss(pred, torch.cat(ys), delta=oc.huber_delta)
         b_loss = None
         if oc.behavioral_weight > 0:
-            b_loss = behavioral_loss()
+            b_loss = conditioned_behavioral_loss() if oc.behavioral_objective == "conditioned" else behavioral_loss()
             loss = loss + oc.behavioral_weight * b_loss
         optim.zero_grad()
         loss.backward()
@@ -255,6 +363,7 @@ def train_operator(
             if score(fit) > score(best):
                 best = {**fit, "step": step}
                 best_state = {k: v.clone() for k, v in net.state_dict().items()}
+    op.final_net_state = {k: v.clone() for k, v in net.state_dict().items()}
     net.load_state_dict(best_state)
     net.eval()
     summary = {
@@ -272,6 +381,8 @@ def train_operator(
         "gain_scale": gscale,
         "successful_only": oc.successful_only,
         "behavioral_weight": oc.behavioral_weight,
+        "behavioral_objective": oc.behavioral_objective,
+        "base": oc.base,
         "selection": oc.selection,
     }
     return op, summary

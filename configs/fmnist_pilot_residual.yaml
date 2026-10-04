@@ -1,0 +1,9 @@
+# Next step 2: Stage B operator as a residual on checkpoint averaging. The operator proposes
+# history_average's delta plus a learned correction (zero-initialized, so the starting operator *is*
+# history_average). Everything else equals fmnist_pilot_stage_b.yaml, so differences between the two
+# runs are due to the base alone. Tests whether the operator carries information beyond averaging.
+inherit: fmnist_pilot_stage_b.yaml
+name: fmnist_pilot_residual
+
+operator:
+  base: history_average

@@ -29,14 +29,17 @@ class ModelState:
     """Everything an improver may observe about a parent model.
 
     ``history`` maps a step lag L to the parameters at ``step - L`` (the
-    trajectory). ``metrics`` are measured on the *accept* split only.
-    ``hparams`` holds the optimizer settings in effect at ``step``.
+    trajectory). ``ema`` maps a decay to the bias-corrected exponential moving
+    average of the iterates up to ``step`` (empty if not tracked). ``metrics``
+    are measured on the *accept* split only. ``hparams`` holds the optimizer
+    settings in effect at ``step``.
     """
 
     theta: torch.Tensor
     step: int
     history: dict[int, torch.Tensor] = field(default_factory=dict)
     opt: OptState | None = None
+    ema: dict[float, torch.Tensor] = field(default_factory=dict)
     metrics: dict[str, Any] = field(default_factory=dict)
     hparams: dict[str, Any] = field(default_factory=dict)
     checkpoint_id: str | None = None

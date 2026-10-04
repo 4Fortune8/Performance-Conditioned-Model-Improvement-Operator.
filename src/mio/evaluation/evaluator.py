@@ -26,11 +26,12 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from mio.baselines.averaging import HistoryAverage
+from mio.baselines.averaging import averaging_improver
 from mio.baselines.controls import ForeignDelta, RandomNormMatched
 from mio.baselines.conventional import ContinuedAdamW, NoUpdate, equivalent_steps, reference_curve
 from mio.baselines.extrapolation import AdamExtrapolation, LinearExtrapolation, Scaled, tune_alpha
 from mio.baselines.scaling import WeightScaling
+from mio.baselines.selector import SelectBest
 from mio.config import ExperimentConfig, SafetyConfig
 from mio.datasets.tasks import TaskData, load_task
 from mio.datasets.transitions import load_transitions
@@ -132,7 +133,7 @@ def build_methods(cfg: ExperimentConfig, store: CheckpointStore, task: TaskData,
     train_split = task.split("train")
     # ---- learned operator --------------------------------------------------
     operator = None
-    if any(m.startswith("operator") for m in methods):
+    if any(m.startswith("operator") or m == "select_with_operator" for m in methods):
         operator_path = operator_path or cfg.results_dir / "operator" / "operator.pt"
         operator = LearnedOperator.load(operator_path, store.spec)
     policy = ConditionPolicy(train_tr, cfg.transitions.metric_split)
@@ -156,7 +157,8 @@ def build_methods(cfg: ExperimentConfig, store: CheckpointStore, task: TaskData,
     if "adam_extrapolation" in methods:
         alphas["adam"] = tune_alpha(lambda a: AdamExtrapolation(oc.beta1, oc.beta2, oc.eps, a), tune_states,
                                     ec.horizons, ec.alpha_grid, accept_score)
-    if "weight_scaling" in methods:
+    if "weight_scaling" in methods or (any(m.startswith("select_") for m in methods)
+                                       and "weight_scaling" in ec.selector_candidates):
         alphas["scaling"] = tune_alpha(lambda a: WeightScaling(a), tune_states, ec.horizons, ec.scaling_grid,
                                        accept_score)
     if operator is not None and "operator_scaled" in methods:
@@ -166,33 +168,38 @@ def build_methods(cfg: ExperimentConfig, store: CheckpointStore, task: TaskData,
     log.info("tuned alphas (val roots, accept split): %s", alphas)
 
     matched_steps = max(1, math.ceil(operator.flops() / (6.0 * store.spec.numel * oc.batch_size))) if operator else 1
-    improvers = []
-    for m in methods:
+
+    def make(m: str):
         if m == "no_update":
-            improvers.append(NoUpdate())
-        elif m == "linear_extrapolation":
-            improvers.append(LinearExtrapolation(max(lags), alphas["linear"]))
-        elif m == "adam_extrapolation":
-            improvers.append(AdamExtrapolation(oc.beta1, oc.beta2, oc.eps, alphas["adam"]))
-        elif m == "history_average":
-            improvers.append(HistoryAverage())
-        elif m == "weight_scaling":
-            improvers.append(WeightScaling(alphas["scaling"]))
-        elif m == "random_norm_matched":
-            improvers.append(RandomNormMatched(store.spec, LinearExtrapolation(max(lags), alphas["linear"]), ec.seed))
-        elif m == "foreign_delta":
-            improvers.append(ForeignDelta(store, train_tr))
-        elif m == "adamw_matched":
-            improvers.append(ContinuedAdamW(model, train_split, oc.beta1, oc.beta2, oc.eps, steps=matched_steps,
-                                            seed=ec.seed, name="adamw_matched"))
-        elif m == "adamw_full":
-            improvers.append(ContinuedAdamW(model, train_split, oc.beta1, oc.beta2, oc.eps, steps=None, seed=ec.seed))
-        elif m == "operator":
-            improvers.append(operator)
-        elif m == "operator_scaled":
-            improvers.append(Scaled(operator, alphas["operator"], name="operator_scaled"))
-        else:
-            raise KeyError(f"unknown method {m!r}")
+            return NoUpdate()
+        if m == "linear_extrapolation":
+            return LinearExtrapolation(max(lags), alphas["linear"])
+        if m == "adam_extrapolation":
+            return AdamExtrapolation(oc.beta1, oc.beta2, oc.eps, alphas["adam"])
+        if m == "history_average" or m.startswith("ema_"):
+            return averaging_improver(m)
+        if m == "weight_scaling":
+            return WeightScaling(alphas["scaling"])
+        if m == "random_norm_matched":
+            return RandomNormMatched(store.spec, LinearExtrapolation(max(lags), alphas["linear"]), ec.seed)
+        if m == "foreign_delta":
+            return ForeignDelta(store, train_tr)
+        if m == "adamw_matched":
+            return ContinuedAdamW(model, train_split, oc.beta1, oc.beta2, oc.eps, steps=matched_steps,
+                                  seed=ec.seed, name="adamw_matched")
+        if m == "adamw_full":
+            return ContinuedAdamW(model, train_split, oc.beta1, oc.beta2, oc.eps, steps=None, seed=ec.seed)
+        if m == "operator":
+            return operator
+        if m == "operator_scaled":
+            return Scaled(operator, alphas["operator"], name="operator_scaled")
+        if m in ("select_simple", "select_with_operator"):
+            names = list(ec.selector_candidates) + (["operator"] if m == "select_with_operator" else [])
+            return SelectBest([make(n) for n in names], accept_score, len(engine.accept_split), oc.batch_size,
+                              name=m)
+        raise KeyError(f"unknown method {m!r}")
+
+    improvers = [make(m) for m in methods]
     # adamw_full first so other methods can be compared with the real optimizer's delta.
     improvers.sort(key=lambda imp: imp.name != "adamw_full")
 
@@ -201,7 +208,13 @@ def build_methods(cfg: ExperimentConfig, store: CheckpointStore, task: TaskData,
 
 def run_evaluation(cfg: ExperimentConfig, root_split: str | None = None, report_split: str | None = None,
                    allow_test: bool = False, methods: list[str] | None = None,
-                   operator_path: Path | None = None, out_dir: Path | None = None) -> Path:
+                   operator_path: Path | None = None, out_dir: Path | None = None,
+                   with_reference: bool = True) -> Path:
+    """One-shot comparison on ``root_split`` roots, reported on ``report_split``.
+
+    ``with_reference=False`` skips the reference AdamW curve (no equivalent-steps metric); used
+    for the train-root memorization measurement, where only gains are compared.
+    """
     ec = cfg.evaluation
     root_split = root_split or ec.root_split
     report_split = report_split or ec.report_split
@@ -246,13 +259,15 @@ def run_evaluation(cfg: ExperimentConfig, root_split: str | None = None, report_
             best_loss[src["root_id"]] = min(
                 evaluate(model, store.theta(a["id"]), engine.report_split, task.num_classes)["loss"] for a in anchors
             )
-        curve = reference_curve(
-            model, state, train_split,
-            lambda th: evaluate(model, th, engine.report_split, task.num_classes)["loss"],
-            ec.reference_multiple * max(ec.horizons), ec.reference_eval_every, oc.beta1, oc.beta2, oc.eps,
-            order_seed=derive_seed(ec.seed, "reference-curve", src["id"]),
-        )
-        curves.append({"source_id": src["id"], "group_id": src["group_id"], "curve": curve})
+        curve = None
+        if with_reference:
+            curve = reference_curve(
+                model, state, train_split,
+                lambda th: evaluate(model, th, engine.report_split, task.num_classes)["loss"],
+                ec.reference_multiple * max(ec.horizons), ec.reference_eval_every, oc.beta1, oc.beta2, oc.eps,
+                order_seed=derive_seed(ec.seed, "reference-curve", src["id"]),
+            )
+            curves.append({"source_id": src["id"], "group_id": src["group_id"], "curve": curve})
         for h in ec.horizons:
             base_cond = policy.request(state, h, "loss", ec.request_quantile, ec.request_neighbors)
             adam_delta = None
@@ -295,9 +310,10 @@ def run_evaluation(cfg: ExperimentConfig, root_split: str | None = None, report_
                     "delta_rel_norm": rec.get("delta_rel_norm"),
                     "cos_to_adamw_full": (float(F.cosine_similarity(delta, adam_delta, dim=0))
                                           if delta is not None and adam_delta is not None else None),
-                    "equivalent_steps": (equivalent_steps(curve, child_loss, ec.reference_smoothing)
+                    "equivalent_steps": (None if curve is None else
+                                         equivalent_steps(curve, child_loss, ec.reference_smoothing)
                                          if child_loss is not None else 0.0),
-                    "reference_max_steps": curve[-1][0],
+                    "reference_max_steps": curve[-1][0] if curve is not None else None,
                     "gap_closed": ((parent["report"]["loss"] - child_loss) / (parent["report"]["loss"] - gap)
                                    if child_loss is not None and parent["report"]["loss"] - gap > 1e-9 else None),
                     "cost": vars(proposal.cost),
@@ -316,6 +332,7 @@ def run_evaluation(cfg: ExperimentConfig, root_split: str | None = None, report_
         "matched_steps": matched_steps,
         "n_sources": len(sources),
         "n_roots": len(store.roots(root_split)),
+        "with_reference": with_reference,
         "operator_path": str(operator_path) if operator else None,
         "wall_time_s": time.perf_counter() - t_start,
         "git_commit": git_commit(),

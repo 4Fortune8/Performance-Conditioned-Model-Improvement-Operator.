@@ -76,9 +76,16 @@ def summarize(rows: list[dict], reference: str = "no_update", n_boot: int = 2000
             lambda r: (_gain(r, False) - _gain(ref_index[(r["source_id"], h)], False))
             if (r["source_id"], h) in ref_index and r["valid"] and ref_index[(r["source_id"], h)]["valid"] else None,
         )
+        gdiffs = _group_means(
+            rs,
+            lambda r: (_gain(r, True) - _gain(ref_index[(r["source_id"], h)], True))
+            if (r["source_id"], h) in ref_index else None,
+        )
         vals = np.array(list(g_ungated.values()))
         dvals = np.array(list(diffs.values()))
-        eq = [r["equivalent_steps"] if r["equivalent_steps"] is not None else np.inf for r in rs if r["valid"]]
+        gdvals = np.array(list(gdiffs.values()))
+        eq = [r["equivalent_steps"] if r["equivalent_steps"] is not None else np.inf for r in rs
+              if r["valid"] and r.get("reference_max_steps") is not None]
         valid = [r for r in rs if r["valid"]]
         out.append({
             "method": method,
@@ -94,6 +101,9 @@ def summarize(rows: list[dict], reference: str = "no_update", n_boot: int = 2000
             "diff_vs_ref_mean": float(dvals.mean()) if len(dvals) else float("nan"),
             "diff_vs_ref_ci": bootstrap_ci(dvals, np.mean, n_boot, seed),
             "p_group_improves_vs_ref": float((dvals > 0).mean()) if len(dvals) else float("nan"),
+            "gated_diff_vs_ref_mean": float(gdvals.mean()) if len(gdvals) else float("nan"),
+            "gated_diff_vs_ref_ci": bootstrap_ci(gdvals, np.mean, n_boot, seed),
+            "p_group_gated_improves_vs_ref": float((gdvals > 0).mean()) if len(gdvals) else float("nan"),
             "success_rate": float(np.mean([_gain(r, False) > 0 for r in valid])) if valid else float("nan"),
             "accept_rate": float(np.mean([r["accepted"] for r in rs])),
             "valid_rate": float(np.mean([r["valid"] for r in rs])),
@@ -220,3 +230,53 @@ def markdown_report(summary: list[dict], ctrl: dict, spec: dict, reference: str,
                   f"per-group specificity {_fmt(spec['specificity_mean'])} CI {_ci(spec['specificity_ci'])} "
                   f"over {spec['n_groups']} groups.", ""]
     return "\n".join(lines)
+
+
+def selector_choices_table(rows: list[dict]) -> str:
+    """How often each selector picked each candidate, per horizon and training stage."""
+    counts: dict[tuple, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for r in rows:
+        if r["method"].startswith("select_") and "chosen" in r.get("info", {}):
+            counts[(r["method"], r["horizon"], r["stage"])][r["info"]["chosen"]] += 1
+    if not counts:
+        return ""
+    lines = ["Selector choices (count of parents):", "", "| selector | horizon | stage | choices |", "|---|---|---|---|"]
+    for (m, h, st), c in sorted(counts.items(), key=lambda kv: (kv[0][0], kv[0][1], STAGES.index(kv[0][2]))):
+        lines.append(f"| {m} | {h} | {st} | " + ", ".join(f"{k}: {v}" for k, v in sorted(c.items())) + " |")
+    return "\n".join(lines) + "\n"
+
+
+def generalization_gap(train_rows: list[dict], heldout_rows: list[dict], n_boot: int = 2000, seed: int = 0,
+                       gated: bool = False) -> list[dict]:
+    """Train-root vs held-out-root gain per (method, horizon) -- the memorization measurement (H2).
+
+    Groups differ between the two sets, so the comparison is unpaired: a two-sample bootstrap
+    over groups of the difference in means. Baselines that never saw any root estimate how much
+    the two root sets differ by chance; the operator's gap is read against theirs.
+    """
+    def per_group(rows: list[dict]) -> dict[tuple[str, int], np.ndarray]:
+        out = {}
+        keys = {(r["method"], r["horizon"]) for r in rows if r["method"] != "operator_class_request"}
+        for m, h in keys:
+            g = _group_means([r for r in rows if r["method"] == m and r["horizon"] == h],
+                             lambda r: _gain(r, gated))
+            out[(m, h)] = np.array(list(g.values()))
+        return out
+
+    tr, ho = per_group(train_rows), per_group(heldout_rows)
+    rng = np.random.default_rng(seed)
+    out = []
+    for key in sorted(set(tr) & set(ho), key=lambda k: (k[1], k[0])):
+        a, b = tr[key], ho[key]
+        if len(a) < 2 or len(b) < 2:
+            continue
+        boots = [a[rng.integers(len(a), size=len(a))].mean() - b[rng.integers(len(b), size=len(b))].mean()
+                 for _ in range(n_boot)]
+        out.append({
+            "method": key[0], "horizon": key[1], "gated": gated,
+            "n_train_groups": len(a), "n_heldout_groups": len(b),
+            "train_mean": float(a.mean()), "heldout_mean": float(b.mean()),
+            "gap": float(a.mean() - b.mean()),
+            "gap_ci": (float(np.quantile(boots, 0.025)), float(np.quantile(boots, 0.975))),
+        })
+    return out

@@ -34,7 +34,7 @@ from mio.evaluation.metrics import evaluate
 from mio.models.registry import build_model
 from mio.state import ModelState
 from mio.trajectories.checkpoints import CheckpointStore
-from mio.trajectories.training import train_steps
+from mio.trajectories.training import EMATracker, train_steps
 from mio.utils.logging import get_logger
 from mio.utils.reproducibility import configure_determinism, derive_seed, git_commit
 from mio.utils.serialization import write_json, write_jsonl
@@ -56,12 +56,14 @@ def interleaved_run(model, task, engine: ChildEngine, state0: ModelState, improv
     def loss(th):
         return evaluate(model, th, report, task.num_classes)["loss"]
 
+    ema = EMATracker.from_corrected(state0.ema, step)  # continue the parent's EMAs through the run
     points = [{"adam_steps": 0, "loss": loss(theta), "jump": None}]
     for c in range(cycles):
         snaps: dict[int, object] = {}
         need = {k - lag: lag for lag in lags}
 
         def cb(j, th, _opt, _need=need, _snaps=snaps):
+            ema.update(th)
             if j in _need:
                 _snaps[_need[j]] = th.clone()
 
@@ -72,7 +74,8 @@ def interleaved_run(model, task, engine: ChildEngine, state0: ModelState, improv
         jump = None
         if improver is not None:
             m = engine.measure(theta)
-            state = ModelState(theta=theta, step=step, history=snaps, opt=opt, metrics=m["accept"],
+            state = ModelState(theta=theta, step=step, history=snaps, opt=opt, ema=ema.corrected(),
+                               metrics=m["accept"],
                                hparams=state0.hparams, checkpoint_id=f"{state0.checkpoint_id}+cycle{c}",
                                root_id=state0.root_id, group_id=state0.group_id)
             rec = engine.run(state, improver.propose(state, condition_fn(state, horizon)), m)

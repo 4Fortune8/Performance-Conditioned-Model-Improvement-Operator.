@@ -9,7 +9,7 @@ population:
   name: pilot_fmnist
   n_groups: 40
   total_steps: 7800       # 20 epochs at batch 128
-  checkpoints: {first: 100, growth: 2.0, linear_every: 1600, history_lags: [50, 200]}
+  checkpoints: {first: 100, growth: 2.0, linear_every: 1600, history_lags: [50, 200], ema_decays: [0.99, 0.999]}
   branching: {every_n_anchors: 1, min_step: 200, n_branches: 3, horizons: [200, 800]}
   split: {train: 0.6, val: 0.2, test: 0.2, seed: 0}
 
@@ -24,4 +24,16 @@ evaluation:
   horizons: [200, 800]
   max_sources_per_root: 6
   bootstrap_samples: 2000
-  interleaved: {adam_steps: 400, cycles: 6, horizon: 400, reference_multiple: 3, start_steps: [400, 1600]}
+  # Session 2: tuned extrapolations, random and foreign-delta controls were reported in session 1
+  # (extrapolations tuned to alpha = 0); this round compares operators with the averaging baselines
+  # and the gated best-simple-baseline selector.
+  methods: [no_update, adamw_full, adamw_matched, history_average, ema_0.99, ema_0.999, weight_scaling,
+            select_simple, operator, operator_scaled, select_with_operator]
+  selector_candidates: [no_update, history_average, ema_0.99, ema_0.999, weight_scaling]
+  interleaved:
+    adam_steps: 400
+    cycles: 6
+    horizon: 400
+    reference_multiple: 3
+    start_steps: [400, 1600]
+    methods: [no_update, ema_0.999, select_simple, operator, select_with_operator]

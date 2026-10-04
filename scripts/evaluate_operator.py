@@ -14,11 +14,14 @@ if __name__ == "__main__":
     p.add_argument("--root-split", choices=["train", "val", "test"], default=None)
     p.add_argument("--report-split", choices=["dev", "accept", "test"], default=None)
     p.add_argument("--methods", nargs="*", default=None)
+    p.add_argument("--no-reference", action="store_true",
+                   help="skip the reference AdamW curve (no equivalent-steps metric); for train-root gap runs")
     p.add_argument("--final", action="store_true", help="evaluate test roots on the official test split (once)")
     args = p.parse_args()
     cfg = config_from_args(args)
     if args.final:
         out = stage_evaluate(cfg, "test", "test", allow_test=True, methods=args.methods)
     else:
-        out = stage_evaluate(cfg, args.root_split, args.report_split, methods=args.methods)
+        out = stage_evaluate(cfg, args.root_split, args.report_split, methods=args.methods,
+                             with_reference=not args.no_reference)
     print((out / "summary.md").read_text())

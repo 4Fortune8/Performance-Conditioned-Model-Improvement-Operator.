@@ -9,7 +9,8 @@ from mio.config import ExperimentConfig
 from mio.datasets.tasks import load_task
 from mio.models.registry import build_model
 from mio.datasets.transitions import build_transitions, load_transitions, summarize_transitions, write_transitions
-from mio.evaluation.analysis import class_specificity, controllability, markdown_report, summarize
+from mio.evaluation.analysis import (class_specificity, controllability, markdown_report, selector_choices_table,
+                                     summarize)
 from mio.evaluation.evaluator import run_evaluation
 from mio.evaluation.interleaved import run_interleaved
 from mio.operators.training import train_operator
@@ -49,6 +50,11 @@ def stage_train_operator(cfg: ExperimentConfig, out_path: Path | None = None) ->
     summary["git_commit"] = git_commit()
     op.save(out_path, cfg.to_dict(), summary)
     write_json(out_path.with_name("training_summary.json"), summary)
+    # The last training step too, so selection effects can be inspected (not used by default).
+    best_state = {k: v.clone() for k, v in op.net.state_dict().items()}
+    op.net.load_state_dict(op.final_net_state)
+    op.save(out_path.with_name("operator_final.pt"), cfg.to_dict(), {**summary, "selected": "final"})
+    op.net.load_state_dict(best_state)
     best = summary["best"]
     log.info("saved operator to %s (selection=%s, best step %s: val nde %.4f, val accept gain %.4f)", out_path,
              cfg.operator.selection, best.get("step"), best.get("nde_mean", float("nan")),
@@ -57,8 +63,10 @@ def stage_train_operator(cfg: ExperimentConfig, out_path: Path | None = None) ->
 
 
 def stage_evaluate(cfg: ExperimentConfig, root_split: str | None = None, report_split: str | None = None,
-                   allow_test: bool = False, methods: list[str] | None = None) -> Path:
-    out = run_evaluation(cfg, root_split, report_split, allow_test, methods)
+                   allow_test: bool = False, methods: list[str] | None = None, with_reference: bool = True,
+                   out_dir: Path | None = None) -> Path:
+    out = run_evaluation(cfg, root_split, report_split, allow_test, methods, out_dir=out_dir,
+                         with_reference=with_reference)
     stage_report(cfg, out)
     return out
 
@@ -83,9 +91,22 @@ def stage_report(cfg: ExperimentConfig, eval_dir: Path, reference: str = "no_upd
         for s in ss:
             md += (f"| {stage} | {s['horizon']} | {s['method']} | {s['n_groups']} | {s['gain_mean']:.4f} | "
                    f"{s['diff_vs_ref_mean']:.4f} |\n")
+    vs_sel = None
+    if any(r["method"] == "select_simple" for r in rows):
+        vs_sel = summarize(rows, "select_simple", ec.bootstrap_samples, ec.seed)
+        md += ("\n## Gated comparison vs the best-simple-baseline selector (`select_simple`)\n\n"
+               "Per-group paired differences of *gated* report-split gains.\n\n"
+               "| horizon | method | groups | gated gain | gated diff vs select_simple | 95% CI | P(group>sel) |\n"
+               "|---|---|---|---|---|---|---|\n")
+        for s in sorted(vs_sel, key=lambda s: (s["horizon"], -s["gated_diff_vs_ref_mean"])):
+            md += (f"| {s['horizon']} | {s['method']} | {s['n_groups']} | {s['gated_gain_mean']:.4f} | "
+                   f"{s['gated_diff_vs_ref_mean']:.4f} | [{s['gated_diff_vs_ref_ci'][0]:.4f}, "
+                   f"{s['gated_diff_vs_ref_ci'][1]:.4f}] | {s['p_group_gated_improves_vs_ref']:.2f} |\n")
+        md += "\n" + selector_choices_table(rows)
     md += (f"\nTuned baseline step sizes (validation roots, accept split): `{info['alphas']}`; "
            f"AdamW steps matched to one operator application: {info['matched_steps']}.\n")
     (eval_dir / "summary.md").write_text(md, encoding="utf-8")
     write_json(eval_dir / "summary.json", {"summary": summary, "by_stage": by_stage, "controllability": ctrl,
-                                           "class_specificity": spec, "run_info": info})
+                                           "class_specificity": spec, "vs_select_simple": vs_sel,
+                                           "run_info": info})
     return md

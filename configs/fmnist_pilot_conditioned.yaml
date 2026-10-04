@@ -1,0 +1,11 @@
+# Next step 3 (H3): Stage B with the condition-aware behavioural objective. Behavioural samples
+# request either the overall loss gain or one class's gain (half of class requests drawn from
+# class-weighted branches with their target class) and penalize |achieved - recorded| training-split
+# gain on that objective, so the request must be read. One factor changed vs fmnist_pilot_stage_b.yaml.
+inherit: fmnist_pilot_stage_b.yaml
+name: fmnist_pilot_conditioned
+
+operator:
+  behavioral_objective: conditioned
+  class_request_prob: 0.5
+  class_targeted_prob: 0.5

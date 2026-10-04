@@ -18,7 +18,7 @@ population:
   total_steps: 300
   workers: 1
   optimizer: {lr: 0.003, weight_decay: 0.0001, batch_size: 32}
-  checkpoints: {first: 25, growth: 2.0, linear_every: 100, history_lags: [10, 25]}
+  checkpoints: {first: 25, growth: 2.0, linear_every: 100, history_lags: [10, 25], ema_decays: [0.9, 0.99]}
   branching: {every_n_anchors: 1, min_step: 50, n_branches: 2, horizons: [20, 50]}
   split: {train: 0.5, val: 0.25, test: 0.25, seed: 0}
 

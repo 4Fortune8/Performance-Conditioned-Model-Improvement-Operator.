@@ -13,6 +13,11 @@ of hidden units. It can also be applied to networks of other widths.
 Conditioning uses hindsight relabeling: during training, the condition is the
 outcome that the observed transition actually achieved (with random objective
 dropout); at inference, the caller requests the outcome it wants.
+
+With a residual ``base`` (e.g. ``history_average``), the operator proposes
+``base_delta + y * lr * horizon``: it learns a correction on top of a fixed,
+parameter-free update, and the zero-initialized operator *is* that update.
+Whatever it gains over the base is information beyond averaging.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from mio.baselines.averaging import averaging_improver
 from mio.models.base import ParamSpec
 from mio.operators.features import FeatureBuilder, FeatureSpec
 from mio.state import Condition, Cost, ModelState, Proposal
@@ -81,7 +87,7 @@ class LearnedOperator:
     """``Improver`` wrapper around a trained ``CoordinatewiseNet``."""
 
     def __init__(self, net: CoordinatewiseNet, spec: ParamSpec, fspec: FeatureSpec, gain_scale: dict[str, float],
-                 name: str = "operator", batch_size_for_cost: int = 128):
+                 name: str = "operator", batch_size_for_cost: int = 128, base: str | None = None):
         self.net = net.eval()
         self.spec = spec
         self.fspec = fspec
@@ -89,6 +95,12 @@ class LearnedOperator:
         self.gain_scale = gain_scale
         self.name = name
         self.batch_size_for_cost = batch_size_for_cost
+        self.base = base
+        self._base = averaging_improver(base) if base else None
+
+    def base_delta(self, state: ModelState, horizon: int) -> torch.Tensor | None:
+        """The fixed update the operator corrects (``None`` for a plain operator)."""
+        return self._base.propose(state, Condition(horizon)).delta if self._base is not None else None
 
     @torch.no_grad()
     def predict_normalized(self, state: ModelState, condition: Condition) -> torch.Tensor:
@@ -101,6 +113,9 @@ class LearnedOperator:
         t0 = time.perf_counter()
         y = self.predict_normalized(state, condition)
         delta = y * FeatureBuilder.target_scale(state, condition.horizon)
+        base = self.base_delta(state, condition.horizon)
+        if base is not None:
+            delta = delta + base
         flops = self.flops()
         return Proposal(
             delta=delta,
@@ -125,6 +140,7 @@ class LearnedOperator:
                 "hidden": self.net.hidden,
                 "feature_spec": self.fspec.to_dict(),
                 "gain_scale": self.gain_scale,
+                "base": self.base,
                 "structure_hash": self.spec.structure_hash,
                 "config": config,
                 "training_summary": training_summary,
@@ -145,7 +161,7 @@ class LearnedOperator:
         fspec = FeatureSpec.from_dict(d["feature_spec"])
         net = CoordinatewiseNet(fspec.n_param, fspec.n_global, d["hidden"])
         net.load_state_dict(d["net_state"])
-        op = cls(net, spec, fspec, d["gain_scale"], name=name)
+        op = cls(net, spec, fspec, d["gain_scale"], name=name, base=d.get("base"))
         op.training_summary = d.get("training_summary", {})
         return op
 

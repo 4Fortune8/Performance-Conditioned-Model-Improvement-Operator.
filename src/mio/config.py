@@ -72,6 +72,9 @@ class CheckpointScheduleConfig:
     growth: float = 2.0
     linear_every: int = 800
     history_lags: list[int] = field(default_factory=lambda: [25, 100])
+    # Bias-corrected exponential moving averages of the trunk iterates, saved with every
+    # anchor (Polyak/EMA averaging baseline). Tracking them does not change training.
+    ema_decays: list[float] = field(default_factory=list)
 
 
 @dataclass
@@ -156,6 +159,16 @@ class OperatorConfig:
     behavioral_weight: float = 0.0
     behavioral_transitions: int = 4
     behavioral_batch: int = 256
+    # Behavioural objective: "improve" (child-minus-parent loss for successful transitions) or
+    # "conditioned" (hindsight-matched: reproduce the recorded transition's training-split gain on
+    # the requested objective -- overall loss or one class -- given its accept-split gain as the
+    # request). See operators/training.py.
+    behavioral_objective: str = "improve"
+    class_request_prob: float = 0.5  # conditioned: fraction of behavioural samples with a class request
+    class_targeted_prob: float = 0.5  # conditioned: of those, fraction drawn from class-weighted branches
+    # Residual base: the operator predicts a correction on top of a fixed simple update
+    # (e.g. "history_average"); None = plain operator. The zero-initialized operator equals the base.
+    base: str | None = None
     # Model selection on validation roots: "nde" (parameter-space fit) or "accept_gain" (functional).
     selection: str = "nde"
     functional_val_sources: int = 16
@@ -214,6 +227,11 @@ class EvaluationConfig:
     scaling_grid: list[float] = field(
         default_factory=lambda: [-0.1, -0.05, -0.02, -0.01, 0.0, 0.01, 0.02, 0.05, 0.1, 0.2])
     accept_min_gain: float = 0.0
+    # Candidates of the gated best-simple-baseline selector (``select_simple``): per parent, the
+    # candidate with the best accept-split loss gain is proposed. ``select_with_operator`` adds the
+    # operator to the same candidate set.
+    selector_candidates: list[str] = field(
+        default_factory=lambda: ["no_update", "history_average", "weight_scaling"])
     reference_multiple: int = 4  # reference AdamW curve length = multiple * horizon
     reference_eval_every: int = 10
     reference_smoothing: int = 5  # moving-average window (evaluation points) before the best-so-far envelope
@@ -349,6 +367,10 @@ def validate_config(cfg: ExperimentConfig) -> None:
         raise ConfigError(f"unknown operator feature groups {sorted(bad)}")
     if cfg.operator.selection not in {"nde", "accept_gain"}:
         raise ConfigError("operator.selection must be 'nde' or 'accept_gain'")
+    if cfg.operator.behavioral_objective not in {"improve", "conditioned"}:
+        raise ConfigError("operator.behavioral_objective must be 'improve' or 'conditioned'")
+    if any(not 0.0 < d < 1.0 for d in cfg.population.checkpoints.ema_decays):
+        raise ConfigError("population.checkpoints.ema_decays must lie in (0, 1)")
     if cfg.evaluation.report_split not in {"dev", "test", "accept"}:
         raise ConfigError("evaluation.report_split must be dev, accept or test")
     if cfg.evaluation.root_split not in {"train", "val", "test"}:

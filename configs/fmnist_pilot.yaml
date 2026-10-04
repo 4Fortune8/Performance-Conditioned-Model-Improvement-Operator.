@@ -1,0 +1,26 @@
+# First research-scale pilot on Fashion-MNIST: 40 independent initializations,
+# 20-epoch trunks, 3 randomized branches at 7 branch points per root.
+# Purpose: measure variance for power analysis and check every pipeline
+# assumption before the pre-registered comparative experiment (Milestone 5).
+inherit: smoke_test.yaml
+name: fmnist_pilot
+
+population:
+  name: pilot_fmnist
+  n_groups: 40
+  total_steps: 7800       # 20 epochs at batch 128
+  checkpoints: {first: 100, growth: 2.0, linear_every: 1600, history_lags: [50, 200]}
+  branching: {every_n_anchors: 1, min_step: 200, n_branches: 3, horizons: [200, 800]}
+  split: {train: 0.6, val: 0.2, test: 0.2, seed: 0}
+
+transitions:
+  max_horizon: 1600
+
+operator:
+  steps: 3000
+  eval_every: 250
+
+evaluation:
+  horizons: [200, 800]
+  max_sources_per_root: 6
+  bootstrap_samples: 2000

@@ -1,0 +1,18 @@
+# Generated research artifacts (never commit checkpoints or datasets)
+data/
+checkpoints/
+results/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+build/
+dist/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/

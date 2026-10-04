@@ -1,0 +1,11 @@
+# Stage A + B ablation on the same pilot population and transition index:
+# adds the behavioural child-loss term and selects the operator by accept-split
+# gain on validation roots (functional selection) instead of parameter-space fit.
+inherit: fmnist_pilot.yaml
+name: fmnist_pilot_stage_b
+
+operator:
+  behavioral_weight: 1.0
+  behavioral_transitions: 4
+  behavioral_batch: 256
+  selection: accept_gain

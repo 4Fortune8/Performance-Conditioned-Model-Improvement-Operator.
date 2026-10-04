@@ -1,0 +1,65 @@
+# End-to-end engineering smoke test on Fashion-MNIST (CPU, ~2-4 minutes with 4 workers).
+# Sizes are engineering defaults, NOT a research dataset; see fmnist_pilot.yaml.
+name: smoke_test
+output_root: .
+num_threads: 1            # per process; parallelism comes from population.workers
+
+task:
+  name: fashion_mnist     # fashion_mnist | mnist | synthetic
+  data_dir: data/raw
+  split_seed: 0
+  n_accept: 5000          # operator inputs, outcome labels, accept/rollback
+  n_dev: 5000             # development reporting
+  n_train_eval: 5000
+
+model:
+  name: mlp
+  hidden: [64, 32]        # 784-64-32-10 = 52,650 parameters
+
+population:
+  name: smoke_fmnist
+  n_groups: 8             # independent initializations (unit of statistical analysis)
+  order_variants: 1
+  master_seed: 0
+  total_steps: 1600       # ~4 epochs at batch 128
+  workers: 4
+  optimizer: {lr: 0.001, beta1: 0.9, beta2: 0.999, eps: 1.0e-8, weight_decay: 0.0001, batch_size: 128}
+  checkpoints: {first: 100, growth: 2.0, linear_every: 800, history_lags: [25, 100]}
+  branching:
+    enabled: true
+    every_n_anchors: 1
+    min_step: 200
+    n_branches: 3
+    horizons: [100, 400]
+    interventions:
+      - {name: continue, kind: continue, weight: 2.0}
+      - {name: lr_x0.3, kind: lr_scale, scale: 0.3}
+      - {name: lr_x3, kind: lr_scale, scale: 3.0}
+      - {name: wd_x10, kind: wd_scale, scale: 10.0}
+      - {name: lr_decay, kind: lr_decay}
+      - {name: class_x4, kind: class_weight, scale: 4.0}
+  split: {train: 0.5, val: 0.25, test: 0.25, seed: 0}
+
+transitions:
+  max_horizon: 800
+  metric_split: accept
+
+operator:
+  features: [weights, history, adam, metrics, condition]
+  hidden: [64, 64]
+  coords_per_transition: 2048
+  transitions_per_batch: 16
+  steps: 1000
+  eval_every: 100
+  condition_dropout: 0.3
+
+safety: {max_rel_update: 2.0, max_abs_value: 1000.0}   # blow-up guard; clip rate is reported per method
+
+evaluation:
+  root_split: val
+  report_split: dev
+  horizons: [100, 400]
+  max_sources_per_root: 4
+  reference_multiple: 4
+  reference_eval_every: 10
+  bootstrap_samples: 1000

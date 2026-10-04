@@ -127,3 +127,61 @@ python scripts/compare_operators.py  --out results/comparison.md \
 # Final, once, after the analysis plan is committed:
 python scripts/evaluate_operator.py  --config configs/<final>.yaml --final       # test roots, test split
 ```
+
+## 6. Gate 1: steering vs. class-weighted fine-tuning (pre-registered before running)
+
+> Status: **frozen** at the commit that adds this section, before any Gate 1 number was computed.
+> Validation roots × dev split only; test roots stay locked.
+
+**Question.** The conditioned operator steers: a class-k request improves class k more than
+the other classes (session 2: specificity +0.0120 on validation roots). Is that useful? The fair
+bar for steering is not averaging but *just training on that class a bit*, at the same compute.
+
+**Operator (frozen, no retraining or tuning in this gate).**
+`results/fmnist_pilot_conditioned/operator/operator.pt` (selected step 1,750; 13 fb-pass
+equivalents per application). It receives the class-k request from the usual `ConditionPolicy`
+(quantile 0.75 of nearby training transitions, horizons 200 and 800). Rows are recomputed in the
+gate run and must reproduce the session-2 rows.
+
+**Baseline `class_ft_w{W}_x{M}`.** Continue AdamW from the parent's exact optimizer state with
+the requested class's loss weight set to W (others 1). That is the population's `class_weight`
+intervention, run for n = M × 13 steps. The ladder is M ∈ {1, 2, 4, 16} and W ∈ {4, 16}. The
+data order is derived from the evaluation seed and the parent id, as for `adamw_*`. At each budget
+M, the bar is the W with the higher mean **accept-split** specificity over all validation
+sources and classes. The weight is selected on the accept split, never on dev.
+
+**Units and statistic.** For each validation source (48 sources, 8 groups) and each requested
+class k (10 classes):
+
+- specificity = dev-split class-k loss gain minus the mean dev-split loss gain of the other nine
+  classes (ungated)
+- for the operator, specificity is averaged over the two request horizons
+
+Each statistic is averaged per group and paired between methods on the same (source, class).
+95% CIs come from 2,000 bootstrap resamples over groups.
+
+**Primary endpoint.** Δspec = operator − `class_ft` at M = 1 (with W selected on accept).
+
+**Secondary endpoints** (all reported):
+
+- requested-class gain
+- overall dev NLL gain under class requests (the side-effect cost)
+- class-accuracy specificity
+- Δspec at M = 2, 4, 16
+- per-horizon operator results
+- equivalent fine-tuning steps: the budget at which the `class_ft` specificity reaches the
+  operator's, interpolated on log steps
+
+**Decision rule.**
+
+| Outcome | Condition | Consequence |
+|---|---|---|
+| **GO** | Δspec CI lower bound > 0, **and** the operator's overall NLL gain under class requests is not significantly worse than `class_ft` at M = 1 (paired-difference CI upper bound ≥ 0) | Gate 2: invest in steering (conditioned + EMA base/features, calibration, v2 operator), then a frozen H3 primary endpoint at ~120 groups. |
+| **NO-GO** | Δspec CI upper bound < 0 | Fine-tuning at the same compute steers better. Stop operator development at this scale; write up the benchmark and the negative result. |
+| **INCONCLUSIVE** | Anything else | Parity with a trivial baseline is not a contribution, so this is treated as no-go for further investment. The result is recorded as is. |
+
+Whatever the outcome, every arm is reported in RESEARCH_LOG.
+
+```bash
+python scripts/gate1_steering.py --config configs/fmnist_pilot_conditioned.yaml   # val roots, dev split
+```

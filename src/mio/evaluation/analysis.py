@@ -62,12 +62,11 @@ def summarize(rows: list[dict], reference: str = "no_update", n_boot: int = 2000
     rows = [r for r in rows if stage is None or r["stage"] == stage]
     by_key: dict[tuple[str, int], list[dict]] = defaultdict(list)
     for r in rows:
-        by_key[(r["method"], r["horizon"])].append(r)
+        if "requested_class" not in r:  # class-request rows are analysed by class_specificity / steering
+            by_key[(r["method"], r["horizon"])].append(r)
     ref_index = {(r["source_id"], r["horizon"]): r for r in rows if r["method"] == reference}
     out = []
     for (method, h), rs in sorted(by_key.items(), key=lambda kv: (kv[0][1], kv[0][0])):
-        if method == "operator_class_request":
-            continue
         g_ungated = _group_means(rs, lambda r: _gain(r, False))
         g_gated = _group_means(rs, lambda r: _gain(r, True))
         g_acc = _group_means(rs, lambda r: _gain(r, False, "acc"))
@@ -156,7 +155,8 @@ def controllability(rows: list[dict], n_boot: int = 2000, seed: int = 0) -> dict
     }
 
 
-def class_specificity(rows: list[dict], num_classes: int, n_boot: int = 2000, seed: int = 0) -> dict:
+def class_specificity(rows: list[dict], num_classes: int, n_boot: int = 2000, seed: int = 0,
+                      method: str = "operator_class_request") -> dict:
     """Requested-class x achieved-class gain matrix (H3).
 
     ``matrix[r][k]`` is the mean report-split class-k loss gain when class r was
@@ -164,7 +164,7 @@ def class_specificity(rows: list[dict], num_classes: int, n_boot: int = 2000, se
     per group and bootstrapped over groups. Requests for other classes serve
     as the control for each class.
     """
-    rs = [r for r in rows if r["method"] == "operator_class_request" and r["valid"]]
+    rs = [r for r in rows if r["method"] == method and r["valid"]]
     if not rs:
         return {"n": 0}
     mat = np.zeros((num_classes, num_classes))

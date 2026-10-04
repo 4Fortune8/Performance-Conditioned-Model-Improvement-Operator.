@@ -70,6 +70,45 @@ class ContinuedAdamW:
         )
 
 
+class ClassWeightedAdamW(ContinuedAdamW):
+    """Steering baseline: continue AdamW with the *requested* class up-weighted.
+
+    Reads the requested objective ``class_k`` from the condition and trains ``steps`` steps with
+    loss weight ``weight`` on class k (1 elsewhere), i.e. the population's ``class_weight``
+    intervention. The proposal ignores the requested magnitude and the horizon. The data order is
+    the same as ``ContinuedAdamW``'s, so budgets of one weight are prefixes of one run.
+    """
+
+    uses_horizon = False
+
+    def __init__(self, model, train: Split, beta1: float, beta2: float, eps: float, steps: int, weight: float,
+                 num_classes: int, seed: int = 0, name: str | None = None):
+        super().__init__(model, train, beta1, beta2, eps, steps=steps, seed=seed,
+                         name=name or f"class_ft_w{weight:g}_n{steps}")
+        self.weight = weight
+        self.num_classes = num_classes
+
+    def propose(self, state: ModelState, condition: Condition) -> Proposal:
+        if state.opt is None:
+            raise ValueError("ClassWeightedAdamW needs the parent's optimizer state")
+        classes = [int(o.split("_")[1]) for o in condition.gains if o.startswith("class_")]
+        if len(classes) != 1:
+            raise ValueError(f"ClassWeightedAdamW needs exactly one class request, got {condition.gains}")
+        w = [1.0] * self.num_classes
+        w[classes[0]] = self.weight
+        settings = settings_from_state(state, self.order_seed(state), self.beta1, self.beta2, self.eps)
+        settings = settings.with_(class_weights=tuple(w))
+        t0 = time.perf_counter()
+        res = train_steps(self.model, state.theta, state.opt, self.train, settings, self.steps)
+        return Proposal(
+            delta=res.theta - state.theta,
+            cost=Cost(task_fb_passes=self.steps, fb_equivalent=float(self.steps),
+                      wall_time_s=time.perf_counter() - t0),
+            info={"steps": self.steps, "weight": self.weight, "target_class": classes[0],
+                  "order_seed": settings.order_seed},
+        )
+
+
 def reference_curve(model, state: ModelState, train: Split, evaluate_fn, n_steps: int, every: int,
                     beta1: float, beta2: float, eps: float, order_seed: int) -> list[tuple[int, float]]:
     """Report-split loss along an AdamW continuation from the exact parent state."""

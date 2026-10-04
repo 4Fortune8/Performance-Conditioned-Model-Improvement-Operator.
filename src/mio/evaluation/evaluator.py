@@ -28,11 +28,12 @@ import torch.nn.functional as F
 
 from mio.baselines.averaging import averaging_improver
 from mio.baselines.controls import ForeignDelta, RandomNormMatched
-from mio.baselines.conventional import ContinuedAdamW, NoUpdate, equivalent_steps, reference_curve
+from mio.baselines.conventional import (ClassWeightedAdamW, ContinuedAdamW, NoUpdate, equivalent_steps,
+                                       reference_curve)
 from mio.baselines.extrapolation import AdamExtrapolation, LinearExtrapolation, Scaled, tune_alpha
 from mio.baselines.scaling import WeightScaling
 from mio.baselines.selector import SelectBest
-from mio.config import ExperimentConfig, SafetyConfig
+from mio.config import ExperimentConfig, SafetyConfig, parse_class_baseline
 from mio.datasets.tasks import TaskData, load_task
 from mio.datasets.transitions import load_transitions
 from mio.evaluation.metrics import evaluate, gains
@@ -237,6 +238,13 @@ def run_evaluation(cfg: ExperimentConfig, root_split: str | None = None, report_
 
     improvers, operator, policy, alphas, matched_steps = build_methods(
         cfg, store, task, model, engine, methods, train_tr, operator_path)
+    class_improvers = []
+    if ec.class_requests:
+        for name in ec.class_baselines:
+            w, mult = parse_class_baseline(name)
+            class_improvers.append(ClassWeightedAdamW(model, train_split, oc.beta1, oc.beta2, oc.eps,
+                                                      steps=mult * matched_steps, weight=w,
+                                                      num_classes=task.num_classes, seed=ec.seed, name=name))
     if operator is not None:
         operator_path = operator_path or cfg.results_dir / "operator" / "operator.pt"
 
@@ -268,6 +276,7 @@ def run_evaluation(cfg: ExperimentConfig, root_split: str | None = None, report_
                 order_seed=derive_seed(ec.seed, "reference-curve", src["id"]),
             )
             curves.append({"source_id": src["id"], "group_id": src["group_id"], "curve": curve})
+        class_cache: dict[tuple[str, int], tuple] = {}  # horizon-free class baselines run once per source
         for h in ec.horizons:
             base_cond = policy.request(state, h, "loss", ec.request_quantile, ec.request_neighbors)
             adam_delta = None
@@ -280,9 +289,20 @@ def run_evaluation(cfg: ExperimentConfig, root_split: str | None = None, report_
                     for k in range(task.num_classes):
                         c = policy.request(state, h, f"class_{k}", ec.request_quantile, ec.request_neighbors)
                         jobs.append(("operator_class_request", operator, c, {"requested_class": k}))
+            if ec.class_requests:
+                for k in range(task.num_classes):
+                    c = policy.request(state, h, f"class_{k}", ec.request_quantile, ec.request_neighbors)
+                    jobs += [(imp.name, imp, c, {"requested_class": k}) for imp in class_improvers]
             for name, imp, cond, extra in jobs:
-                proposal = imp.propose(state, cond)
-                rec = engine.run(state, proposal, parent)
+                key = (name, extra.get("requested_class", -1))
+                if getattr(imp, "uses_horizon", True) is False and key in class_cache:
+                    proposal, rec = class_cache[key]
+                    rec = dict(rec)
+                else:
+                    proposal = imp.propose(state, cond)
+                    rec = engine.run(state, proposal, parent)
+                    if getattr(imp, "uses_horizon", True) is False:
+                        class_cache[key] = (proposal, {k: v for k, v in rec.items() if k != "_delta"})
                 delta = rec.pop("_delta", None)
                 if name == "adamw_full" and delta is not None:
                     adam_delta = delta
@@ -330,6 +350,7 @@ def run_evaluation(cfg: ExperimentConfig, root_split: str | None = None, report_
         "methods": [i.name for i in improvers],
         "alphas": {k: {str(h): a for h, a in v.items()} for k, v in alphas.items()},
         "matched_steps": matched_steps,
+        "class_baselines": {i.name: {"weight": i.weight, "steps": i.steps} for i in class_improvers},
         "n_sources": len(sources),
         "n_roots": len(store.roots(root_split)),
         "with_reference": with_reference,

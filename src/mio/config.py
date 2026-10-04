@@ -232,6 +232,9 @@ class EvaluationConfig:
     # operator to the same candidate set.
     selector_candidates: list[str] = field(
         default_factory=lambda: ["no_update", "history_average", "weight_scaling"])
+    # Steering baselines run on every class request (Gate 1): ``class_ft_w<W>_x<M>`` continues AdamW
+    # with the requested class weighted W for M x (the operator's matched step budget) steps.
+    class_baselines: list[str] = field(default_factory=list)
     reference_multiple: int = 4  # reference AdamW curve length = multiple * horizon
     reference_eval_every: int = 10
     reference_smoothing: int = 5  # moving-average window (evaluation points) before the best-so-far envelope
@@ -287,6 +290,20 @@ class ExperimentConfig:
 
 class ConfigError(ValueError):
     pass
+
+
+def parse_class_baseline(name: str) -> tuple[float, int]:
+    """``class_ft_w4_x2`` -> (weight 4.0, budget multiple 2)."""
+    parts = name.split("_")
+    try:
+        if parts[:2] != ["class", "ft"] or len(parts) != 4 or parts[2][0] != "w" or parts[3][0] != "x":
+            raise ValueError
+        weight, mult = float(parts[2][1:]), int(parts[3][1:])
+    except (ValueError, IndexError):
+        raise ConfigError(f"bad class baseline {name!r}; expected class_ft_w<weight>_x<multiple>") from None
+    if weight <= 0 or mult <= 0:
+        raise ConfigError(f"class baseline {name!r}: weight and multiple must be positive")
+    return weight, mult
 
 
 def _build(cls: type, data: Any, path: str) -> Any:
@@ -371,6 +388,8 @@ def validate_config(cfg: ExperimentConfig) -> None:
         raise ConfigError("operator.behavioral_objective must be 'improve' or 'conditioned'")
     if any(not 0.0 < d < 1.0 for d in cfg.population.checkpoints.ema_decays):
         raise ConfigError("population.checkpoints.ema_decays must lie in (0, 1)")
+    for name in cfg.evaluation.class_baselines:
+        parse_class_baseline(name)
     if cfg.evaluation.report_split not in {"dev", "test", "accept"}:
         raise ConfigError("evaluation.report_split must be dev, accept or test")
     if cfg.evaluation.root_split not in {"train", "val", "test"}:

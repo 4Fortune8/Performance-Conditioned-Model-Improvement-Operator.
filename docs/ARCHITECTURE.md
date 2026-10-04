@@ -133,7 +133,7 @@ includes 0, so a tuned method can decline to move.
 
    Ungated and gated gains are both recorded.
 4. Each row also records:
-   - equivalent steps (isotonic fit of the reference curve)
+   - equivalent steps (against the reference's smoothed best-so-far envelope)
    - gap closed relative to the root's best trunk loss
    - cosine to the `adamw_full` delta
    - delta norms, safety flags and cost.

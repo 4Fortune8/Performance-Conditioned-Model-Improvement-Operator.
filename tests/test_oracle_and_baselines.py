@@ -5,7 +5,7 @@ import torch
 
 from mio.baselines.averaging import HistoryAverage
 from mio.baselines.controls import ForeignDelta, Oracle, RandomNormMatched
-from mio.baselines.conventional import ContinuedAdamW, NoUpdate, equivalent_steps, isotonic_nonincreasing
+from mio.baselines.conventional import ContinuedAdamW, NoUpdate, equivalent_steps, reference_envelope
 from mio.baselines.extrapolation import AdamExtrapolation, LinearExtrapolation, tune_alpha
 from mio.config import SafetyConfig
 from mio.evaluation.evaluator import ChildEngine
@@ -77,15 +77,26 @@ def test_foreign_delta_uses_another_root(population, transitions):
     assert used["root_id"] != state.root_id
 
 
-def test_equivalent_steps_uses_isotonic_fit():
-    curve = [(0, 1.0), (10, 0.8), (20, 0.9), (30, 0.6)]  # isotonic fit: 1.0, 0.85, 0.85, 0.6
-    assert isotonic_nonincreasing([v for _, v in curve]) == pytest.approx([1.0, 0.85, 0.85, 0.6])
+def test_equivalent_steps_best_so_far_envelope():
+    curve = [(0, 1.0), (10, 0.8), (20, 0.9), (30, 0.6)]
+    assert reference_envelope(curve) == pytest.approx([1.0, 0.8, 0.8, 0.6])
     assert equivalent_steps(curve, 1.1) == 0.0
-    assert equivalent_steps(curve, 0.9) == pytest.approx(10 * 0.1 / 0.15)
-    assert equivalent_steps(curve, 0.7) == pytest.approx(20 + 10 * 0.15 / 0.25)
+    assert equivalent_steps(curve, 0.9) == pytest.approx(5.0)
+    assert equivalent_steps(curve, 0.7) == pytest.approx(25.0)
     assert equivalent_steps(curve, 0.5) is None  # beyond the reference
     # zero gain is zero steps even when early reference points rise above the parent
     assert equivalent_steps([(0, 1.0), (10, 1.2), (20, 0.5)], 1.0) == 0.0
+    # U-shaped (overfitting) reference: its minimum is reachable, not "beyond"
+    u = [(0, 1.0), (10, 0.5), (20, 0.8), (30, 0.9)]
+    assert equivalent_steps(u, 0.5) == pytest.approx(10.0)
+
+
+def test_reference_envelope_smoothing_keeps_parent_exact():
+    curve = [(0, 1.0), (10, 0.7), (20, 0.9), (30, 0.5), (40, 0.6)]
+    env = reference_envelope(curve, window=3)
+    assert env[0] == 1.0  # the parent point is never smoothed
+    assert env == pytest.approx([1.0, 0.8, 0.7, 2.0 / 3.0, 0.55])
+    assert all(a >= b for a, b in zip(env, env[1:]))
 
 
 def test_tune_alpha_picks_best(population, model, task):

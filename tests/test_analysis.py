@@ -50,7 +50,7 @@ def test_class_specificity_diagonal():
 
 
 def test_interleaved_protocol_calibration(population, synthetic_cfg, tmp_path):
-    """no_update must reproduce the plain-AdamW reference exactly (gain 0, speedup 1)."""
+    """no_update must reproduce the plain-AdamW reference exactly (gain 0, speedup <= 1)."""
     from mio.evaluation.interleaved import run_interleaved
     from mio.pipeline import stage_train_operator
     from mio.utils.serialization import read_jsonl
@@ -60,6 +60,7 @@ def test_interleaved_protocol_calibration(population, synthetic_cfg, tmp_path):
     rows = list(read_jsonl(out / "results.jsonl"))
     base = [r for r in rows if r["method"] == "no_update"]
     assert base and all(r["gain_vs_reference"] == 0.0 for r in base)
-    assert all(r["speedup"] == pytest.approx(1.0) for r in base)
+    # speedup is measured against AdamW's best-so-far envelope: exactly 1 while it still improves
+    assert all(r["speedup"] is not None and r["speedup"] <= 1.0 + 1e-9 for r in base)
     assert {r["method"] for r in rows} == {"no_update", "adam_extrapolation", "operator"}
     assert (out / "summary.md").exists()

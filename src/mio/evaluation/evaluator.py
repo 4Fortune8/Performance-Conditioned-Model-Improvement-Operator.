@@ -230,6 +230,7 @@ def run_evaluation(cfg: ExperimentConfig, root_split: str | None = None, report_
 
     best_loss: dict[str, float] = {}
     rows: list[dict] = []
+    curves: list[dict] = []
     total_steps = cfg.population.total_steps
     for si, src in enumerate(sources):
         state = store.model_state(src["id"])
@@ -245,6 +246,7 @@ def run_evaluation(cfg: ExperimentConfig, root_split: str | None = None, report_
             ec.reference_multiple * max(ec.horizons), ec.reference_eval_every, oc.beta1, oc.beta2, oc.eps,
             order_seed=derive_seed(ec.seed, "reference-curve", src["id"]),
         )
+        curves.append({"source_id": src["id"], "group_id": src["group_id"], "curve": curve})
         for h in ec.horizons:
             base_cond = policy.request(state, h, "loss", ec.request_quantile, ec.request_neighbors)
             adam_delta = None
@@ -287,7 +289,8 @@ def run_evaluation(cfg: ExperimentConfig, root_split: str | None = None, report_
                     "delta_rel_norm": rec.get("delta_rel_norm"),
                     "cos_to_adamw_full": (float(F.cosine_similarity(delta, adam_delta, dim=0))
                                           if delta is not None and adam_delta is not None else None),
-                    "equivalent_steps": equivalent_steps(curve, child_loss) if child_loss is not None else 0.0,
+                    "equivalent_steps": (equivalent_steps(curve, child_loss, ec.reference_smoothing)
+                                         if child_loss is not None else 0.0),
                     "reference_max_steps": curve[-1][0],
                     "gap_closed": ((parent["report"]["loss"] - child_loss) / (parent["report"]["loss"] - gap)
                                    if child_loss is not None and parent["report"]["loss"] - gap > 1e-9 else None),
@@ -298,6 +301,7 @@ def run_evaluation(cfg: ExperimentConfig, root_split: str | None = None, report_
 
     out_dir = out_dir or cfg.results_dir / f"eval_{root_split}_{report_split}"
     write_jsonl(out_dir / "results.jsonl", rows)
+    write_jsonl(out_dir / "reference_curves.jsonl", curves)  # lets the step metric be recomputed offline
     write_json(out_dir / "run_info.json", {
         "root_split": root_split,
         "report_split": report_split,

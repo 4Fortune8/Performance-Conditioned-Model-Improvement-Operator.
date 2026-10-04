@@ -47,7 +47,8 @@ All gains are signed so that positive = better (`metrics.gains`).
   or the official test split (final).
 - **Gated gain:** after accept/rollback on the accept split. Gating is applied to every method.
 - **Equivalent steps:** AdamW steps from the parent's exact state needed to reach the child's
-  loss, using an isotonic fit of the reference curve. `None` (∞) means beyond the reference
+  loss, using the reference's smoothed best-so-far envelope (AdamW with best-checkpoint
+  selection; smoothing window `reference_smoothing`). `None` (∞) means beyond the reference
   budget, a candidate *enhancement*. Calibration check: `adamw_full` at horizon h should come
   out near h.
 - **Gap closed:** (L_parent − L_child) / (L_parent − best trunk loss of that root).

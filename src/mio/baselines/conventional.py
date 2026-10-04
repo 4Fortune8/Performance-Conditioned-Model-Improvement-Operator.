@@ -84,38 +84,42 @@ def reference_curve(model, state: ModelState, train: Split, evaluate_fn, n_steps
     return curve
 
 
-def isotonic_nonincreasing(values: list[float]) -> list[float]:
-    """Least-squares non-increasing fit (pool adjacent violators)."""
-    blocks: list[list[float]] = []  # [sum, count]
-    for v in values:
-        blocks.append([float(v), 1.0])
-        while len(blocks) > 1 and blocks[-2][0] / blocks[-2][1] < blocks[-1][0] / blocks[-1][1]:
-            s, c = blocks.pop()
-            blocks[-1][0] += s
-            blocks[-1][1] += c
-    out: list[float] = []
-    for s, c in blocks:
-        out.extend([s / c] * int(c))
-    return out
+def reference_envelope(curve: list[tuple[int, float]], window: int = 1) -> list[float]:
+    """Best-so-far loss of the reference optimizer, after light smoothing.
 
-
-def equivalent_steps(curve: list[tuple[int, float]], child_loss: float) -> float | None:
-    """Reference AdamW steps needed to match ``child_loss``.
-
-    The noisy reference curve is replaced by its best non-increasing (isotonic)
-    fit, so evaluation noise does not make the reference look faster than it
-    is. Returns 0 if the child is no better than the fitted parent loss,
-    ``None`` if the reference never reaches it within the curve (a candidate
-    *enhancement*), and interpolates linearly between evaluation points.
+    Point 0 (the parent) is kept exact. Later points are replaced by a centred
+    moving average over ``window`` evaluations (restricted to points >= 1) to
+    remove evaluation noise, then by their running minimum. The envelope is
+    therefore "AdamW with best-checkpoint selection": monotone by construction,
+    and correct when the raw curve turns upward late in training (overfitting),
+    where a monotone *fit* would pool the rising tail above the true minimum.
     """
-    ks = [k for k, _ in curve]
+    ys = [v for _, v in curve]
+    half = max(window, 1) // 2
+    smoothed = [ys[0]]
+    for i in range(1, len(ys)):
+        lo, hi = max(1, i - half), min(len(ys), i + half + 1)
+        smoothed.append(sum(ys[lo:hi]) / (hi - lo))
+    env, best = [], float("inf")
+    for v in smoothed:
+        best = min(best, v)
+        env.append(best)
+    return env
+
+
+def equivalent_steps(curve: list[tuple[int, float]], child_loss: float, window: int = 1) -> float | None:
+    """Reference AdamW steps needed to match ``child_loss`` (see ``reference_envelope``).
+
+    Returns 0 if the child is no better than the parent, ``None`` if the
+    reference never reaches it within the curve (a candidate *enhancement*),
+    and interpolates linearly between evaluation points otherwise.
+    """
     if child_loss >= curve[0][1]:  # no gain over the parent's exact loss
         return 0.0
-    fit = isotonic_nonincreasing([v for _, v in curve])
-    if child_loss >= fit[0]:
-        return 0.0
-    for i in range(1, len(fit)):
-        if fit[i] <= child_loss:
-            frac = (fit[i - 1] - child_loss) / max(fit[i - 1] - fit[i], 1e-12)
+    ks = [k for k, _ in curve]
+    env = reference_envelope(curve, window)
+    for i in range(1, len(env)):
+        if env[i] <= child_loss:
+            frac = (env[i - 1] - child_loss) / max(env[i - 1] - env[i], 1e-12)
             return float(ks[i - 1] + frac * (ks[i] - ks[i - 1]))
     return None

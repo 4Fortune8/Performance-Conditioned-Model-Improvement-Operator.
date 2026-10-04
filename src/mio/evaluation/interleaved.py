@@ -9,9 +9,11 @@ comparison is paired. Reported per (source, method):
 
     gain_vs_reference   reference loss - interleaved loss at equal AdamW steps (report split)
     speedup             reference steps needed to match the final interleaved loss
-                        / AdamW steps actually used (isotonic fit; None = beyond reference)
+                        / AdamW steps actually used, against the reference's best-so-far
+                        envelope (AdamW with best-checkpoint selection; None = beyond reference)
 
-``no_update`` reproduces the reference exactly (speedup 1), which is a calibration check.
+``no_update`` reproduces the reference exactly (gain 0; speedup 1 while the reference is
+still improving, < 1 once it overfits), which is a calibration check.
 """
 
 from __future__ import annotations
@@ -109,13 +111,14 @@ def run_interleaved(cfg: ExperimentConfig, root_split: str | None = None, method
         return policy.request(state, h, "loss", ec.request_quantile, ec.request_neighbors)
 
     sources = [r for r in store.sources(root_split) if r["step"] in set(ic.start_steps)]
-    rows = []
+    rows, ref_curves = [], []
     for src in sources:
         state0 = store.model_state(src["id"])
         seed = derive_seed(ec.seed, "interleaved", src["id"])
         ref = interleaved_run(model, task, engine, state0, None, condition_fn, ic.adam_steps,
                               ic.cycles * ic.reference_multiple, ic.horizon, lags, bse, seed)
         ref_curve = [(p["adam_steps"], p["loss"]) for p in ref]
+        ref_curves.append({"source_id": src["id"], "group_id": src["group_id"], "curve": ref_curve})
         ref_at = {p["adam_steps"]: p["loss"] for p in ref}
         runs = [("no_update", None)] + [(imp.name, imp) for imp in improvers]
         for name, imp in runs:
@@ -137,6 +140,7 @@ def run_interleaved(cfg: ExperimentConfig, root_split: str | None = None, method
 
     out_dir = out_dir or cfg.results_dir / f"interleaved_{root_split}_{ec.report_split}"
     write_jsonl(out_dir / "results.jsonl", rows)
+    write_jsonl(out_dir / "reference_curves.jsonl", ref_curves)
     summary = summarize_interleaved(rows, ec.bootstrap_samples, ec.seed)
     write_json(out_dir / "summary.json", {"summary": summary, "alphas": {k: {str(h): a for h, a in v.items()}
                                                                          for k, v in alphas.items()},

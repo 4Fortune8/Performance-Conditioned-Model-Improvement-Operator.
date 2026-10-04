@@ -50,8 +50,13 @@ These came from inspecting the first smoke results. They matter for any future c
    (−9.1 nats). The grid is now log-spaced and includes 0, so a tuned method can decline to
    move. The operator also gets a tuned step size (`operator_scaled`) for parity.
 2. **Equivalent steps biased low.** A running minimum over a noisy reference curve made real
-   AdamW at h=100 look worth ~38 steps. The metric now uses an isotonic (monotone) fit of the
-   reference curve, and zero gain maps to exactly 0 steps.
+   AdamW at h=100 look worth ~38 steps. An isotonic (monotone) fit replaced it first. That fit
+   then failed on the pilot: once trunks overfit, the reference curve is U-shaped, and the
+   fit pools the rising tail *above* the true minimum. The interleaved `no_update` control
+   scored speedup 1.70 / ∞ instead of ≈ 1. The final metric compares against the
+   reference's best-so-far envelope after a 5-point moving average, i.e. AdamW with
+   best-checkpoint selection. Zero gain maps to exactly 0 steps. Reference curves are saved
+   with every evaluation so the metric can be recomputed offline.
 3. **Safety clip distorted legitimate moves.** A per-tensor guard of 0.5×‖θ_T‖ clipped real
    AdamW's 400-step moves on small-norm tensors (biases) in 38% of cases. It is now a 2.0×
    blow-up guard, and clip rates are reported per method.

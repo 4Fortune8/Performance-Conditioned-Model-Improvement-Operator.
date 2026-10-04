@@ -49,7 +49,10 @@ def stage_train_operator(cfg: ExperimentConfig, out_path: Path | None = None) ->
     summary["git_commit"] = git_commit()
     op.save(out_path, cfg.to_dict(), summary)
     write_json(out_path.with_name("training_summary.json"), summary)
-    log.info("saved operator to %s (best val nde %.4f)", out_path, summary["best"].get("nde_mean", float("nan")))
+    best = summary["best"]
+    log.info("saved operator to %s (selection=%s, best step %s: val nde %.4f, val accept gain %.4f)", out_path,
+             cfg.operator.selection, best.get("step"), best.get("nde_mean", float("nan")),
+             best.get("accept_gain_mean", float("nan")))
     return out_path
 
 

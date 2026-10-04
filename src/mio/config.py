@@ -212,6 +212,7 @@ class EvaluationConfig:
     accept_min_gain: float = 0.0
     reference_multiple: int = 4  # reference AdamW curve length = multiple * horizon
     reference_eval_every: int = 10
+    reference_smoothing: int = 5  # moving-average window (evaluation points) before the best-so-far envelope
     max_sources_per_root: int | None = None
     bootstrap_samples: int = 2000
     seed: int = 0
